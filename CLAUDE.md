@@ -21,9 +21,18 @@ through the ACS API.
 4. **Run tests** — `make test`. The scenario should go from Pending to Passing.
 5. **Repeat** for the next step/scenario.
 
+### The cardinal rule
+
+**Never change production code unless a test is failing (or pending) that
+demands the change.** This applies to all situations — initial implementation,
+bug fixes, and real-cluster validation failures alike. If all tests are green
+but the code is wrong, the problem is in the specs or tests, not just the code.
+
 ### Rules for AI agents
 
-- **Never modify `.feature` files** unless the spec itself is wrong (discuss first).
+- **Specs are the source of truth.** Production code implements specs, not the
+  other way around. If code and spec disagree, the spec wins until explicitly
+  changed.
 - **One scenario at a time.** Don't batch-implement multiple scenarios — the
   test feedback loop is the safety net.
 - **Step definitions are glue code.** They set up state, call production code
@@ -36,6 +45,24 @@ through the ACS API.
   `internal/<pkg>/*_test.go` and name them `TestIMP_CLI_001_*`.
 - **Don't add features not in the specs.** If you think something is missing,
   flag it — don't implement it speculatively.
+
+### When something breaks: the corrective flow
+
+When real-cluster validation, a bug report, or any other feedback reveals that
+the code is wrong, **do not jump straight to fixing the code.** Follow this
+flow:
+
+1. **Diagnose:** is the spec wrong, or the implementation?
+2. **If the spec is wrong or incomplete:** update the `.feature` file or
+   markdown spec first. Discuss with the user before changing specs. Run tests
+   — they should now fail (red). Then fix code to make them green.
+3. **If the spec is right but the implementation is wrong:** run the existing
+   tests. They should already be failing. If they are green despite wrong
+   behavior, the tests are too weak — **strengthen the test first** (add
+   assertions, tighten scenarios) so it goes red, then fix code.
+4. **Never fix code while all tests are green.** A green suite with wrong
+   runtime behavior means the test is not covering the real problem. Fix the
+   test gap first.
 
 ### Real-cluster validation checkpoints
 
@@ -56,6 +83,10 @@ early, AI agents MUST validate against a real cluster at these checkpoints:
 **How to validate:** build the binary (`make build`) and run it against the test
 cluster. Compare output/report against what you see in the ACS API and kubectl.
 Don't just check exit code — inspect the created resources.
+
+**When validation fails:** follow the corrective flow above. Do not fix code
+directly — identify whether the spec or the test is the gap, fix top-down
+(spec → test → code), and re-validate.
 
 **Minimum rule:** never consider a feature area "done" without at least one
 successful run against the real cluster. If the cluster is unreachable, flag it
