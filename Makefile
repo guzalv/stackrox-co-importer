@@ -1,4 +1,4 @@
-.PHONY: test test-verbose spec-coverage build clean
+.PHONY: test test-verbose test-e2e spec-coverage build clean
 
 BINARY := compliance-operator-importer
 GOFLAGS := -v
@@ -14,6 +14,15 @@ test-verbose:
 ## Check that all IMP-* requirement IDs from specs appear in test code
 spec-coverage:
 	./hack/check-spec-coverage.sh
+
+## Run e2e/acceptance tests against a real cluster (requires env vars, see CLAUDE.md)
+test-e2e:
+	go test -v -tags=e2e -timeout=5m ./e2e/...
+
+## Smoke test: build + dry-run against real cluster (quick real-cluster validation)
+smoke:
+	$(MAKE) build
+	./bin/$(BINARY) --endpoint "$${ROX_ENDPOINT}" --dry-run --insecure-skip-verify
 
 ## Build the importer binary
 build:

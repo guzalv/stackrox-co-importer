@@ -37,6 +37,42 @@ through the ACS API.
 - **Don't add features not in the specs.** If you think something is missing,
   flag it — don't implement it speculatively.
 
+### Real-cluster validation checkpoints
+
+Godog scenarios test logic with fakes. But fakes can mask real problems: wrong API
+paths, TLS issues, unexpected K8s RBAC, payload shape mismatches. To catch these
+early, AI agents MUST validate against a real cluster at these checkpoints:
+
+| After completing...                          | Run against real cluster            |
+|----------------------------------------------|-------------------------------------|
+| ACS client (`internal/acs/`)                 | Preflight probe: can you auth and list scan configs? |
+| K8s CO fetcher (`internal/cofetch/`)         | Can you list SSBs, ScanSettings, Profiles from the real cluster? |
+| Cluster ID discovery (`internal/discover/`)  | Does auto-discovery resolve the correct ACS cluster ID? |
+| First full mapping pipeline                  | `--dry-run`: does the output make sense for real CO resources? |
+| Reconcile/create path (`internal/reconcile/`)| Apply mode: does the created ACS scan config appear in Central? |
+| Idempotency                                  | Second run: does it skip with no errors? |
+| Adoption workflow                            | Does SSB patching work against the real cluster? |
+
+**How to validate:** build the binary (`make build`) and run it against the test
+cluster. Compare output/report against what you see in the ACS API and kubectl.
+Don't just check exit code — inspect the created resources.
+
+**Minimum rule:** never consider a feature area "done" without at least one
+successful run against the real cluster. If the cluster is unreachable, flag it
+as a blocker — don't silently skip.
+
+**Test cluster environment:**
+
+```bash
+export ROX_ENDPOINT="https://central-stackrox.apps.ga-ocp4-cron.ocp.infra.rox.systems"
+export ROX_ADMIN_USER="admin"
+export ROX_ADMIN_PASSWORD="admin"
+export CO_NAMESPACE="openshift-compliance"
+export KUBECONFIG="$HOME/.kube/config:$HOME/.kube/config-secured-cluster"
+```
+
+See `specs/04-validation-and-acceptance.md` for the full acceptance check procedure.
+
 ## Project structure
 
 ```
@@ -70,6 +106,8 @@ hack/                           # Helper scripts
 ```bash
 make test               # Run all Godog scenarios + Go tests
 make test-verbose       # Same, with step-by-step output
+make test-e2e           # Run acceptance tests against real cluster (needs env vars)
+make smoke              # Build + dry-run against real cluster (quick validation)
 make spec-coverage      # Check all IMP-* IDs appear in tests
 make build              # Build the importer binary
 make lint               # Run golangci-lint (if configured)
