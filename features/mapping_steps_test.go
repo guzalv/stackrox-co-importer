@@ -1,12 +1,47 @@
 package features
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
 	"github.com/cucumber/godog"
+	"github.com/stackrox/co-importer/internal/mapping"
+	"github.com/stackrox/co-importer/internal/models"
+	"github.com/stackrox/co-importer/internal/problems"
 )
+
+// mappingTestContext shares state between steps within a scenario.
+type mappingTestContext struct {
+	ssb         *models.ScanSettingBinding
+	scanSetting *models.ScanSetting
+	profiles    []models.ProfileRef
+	payload     *models.ACSPayload
+	payloadJSON []byte
+	problems    *problems.Collector
+	err         error
+	skipped     map[string]bool // tracks skipped SSBs
+}
+
+var mtc *mappingTestContext
+
+// resetMappingTestContext initialises a fresh context for each scenario.
+func resetMappingTestContext() {
+	mtc = &mappingTestContext{
+		problems: problems.New(),
+		skipped:  make(map[string]bool),
+	}
+}
 
 // registerMappingSteps registers step definitions for specs/02-co-to-acs-mapping.feature.
 // All steps start as pending — implement them alongside production code.
 func registerMappingSteps(ctx *godog.ScenarioContext) {
+	ctx.Before(func(ctx2 context.Context, sc *godog.Scenario) (context.Context, error) {
+		resetMappingTestContext()
+		return ctx2, nil
+	})
+
 	// Background
 	ctx.Step(`^ACS endpoint and token preflight succeeded$`, acsEndpointAndTokenPreflightSucceeded)
 	ctx.Step(`^the importer can read compliance\.openshift\.io resources$`, theImporterCanReadCOResources)
@@ -118,38 +153,418 @@ func registerMappingSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^"([^"]*)" MUST be skipped$`, ssbMustBeSkipped)
 }
 
-// --- Step definition stubs (all return godog.ErrPending) ---
+// --- Background steps (no-op in unit tests) ---
 
-func acsEndpointAndTokenPreflightSucceeded() error     { return godog.ErrPending }
-func theImporterCanReadCOResources() error              { return godog.ErrPending }
-func aScanSettingBindingInNamespace(_, _ string) error   { return godog.ErrPending }
-func theBindingReferencesScanSetting(_ string) error     { return godog.ErrPending }
-func theBindingReferencesProfiles(_ *godog.Table) error  { return godog.ErrPending }
-func theImporterBuildsTheACSPayload() error              { return godog.ErrPending }
-func payloadScanNameMustEqual(_ string) error            { return godog.ErrPending }
-func payloadProfilesMustEqual(_ *godog.Table) error      { return godog.ErrPending }
+// IMP-MAP-001 (background)
+func acsEndpointAndTokenPreflightSucceeded() error { return nil }
+func theImporterCanReadCOResources() error          { return nil }
 
-func aProfileReferenceWithNoKind(_ string) error         { return godog.ErrPending }
-func theImporterResolvesProfileReferences() error        { return godog.ErrPending }
-func profileReferenceKindMustBe(_ string) error          { return godog.ErrPending }
-func acsProfileNameListMustInclude(_ string) error       { return godog.ErrPending }
+// --- IMP-MAP-001: Use ScanSettingBinding name as scanName ---
 
-func scanSettingHasSchedule(_, _ string) error           { return godog.ErrPending }
-func scanSettingBindingReferences(_, _ string) error     { return godog.ErrPending }
-func theImporterMapsScheduleFields() error               { return godog.ErrPending }
-func payloadOneTimeScanMustBeFalse() error               { return godog.ErrPending }
-func payloadScanScheduleMustBePresent() error            { return godog.ErrPending }
+func aScanSettingBindingInNamespace(name, namespace string) error {
+	// IMP-MAP-001
+	mtc.ssb = &models.ScanSettingBinding{
+		Name:      name,
+		Namespace: namespace,
+	}
+	return nil
+}
 
-func theImporterBuildsPayloadJSON() error                       { return godog.ErrPending }
-func jsonScheduleFieldsMustMatch() error                        { return godog.ErrPending }
-func jsonIntervalTypeMustBe(_ string) error                     { return godog.ErrPending }
-func weeklyDaysOfWeekMustBePresent() error                      { return godog.ErrPending }
-func monthlyDaysOfMonthMustBePresent() error                    { return godog.ErrPending }
-func payloadFieldNamesMustMatchProto() error                    { return godog.ErrPending }
+func theBindingReferencesScanSetting(settingName string) error {
+	// IMP-MAP-001
+	mtc.ssb.ScanSettingName = settingName
+	// Create a default ScanSetting with a valid schedule so payload building works.
+	if mtc.scanSetting == nil {
+		mtc.scanSetting = &models.ScanSetting{
+			Name:      settingName,
+			Namespace: mtc.ssb.Namespace,
+			Schedule:  "0 0 * * *", // default valid cron
+		}
+	} else {
+		mtc.scanSetting.Name = settingName
+	}
+	return nil
+}
 
-func theImporterBuildsPayloadDescription() error                { return godog.ErrPending }
-func payloadDescriptionMustContain(_ string) error              { return godog.ErrPending }
-func payloadDescriptionShouldIncludeContext() error             { return godog.ErrPending }
+func theBindingReferencesProfiles(table *godog.Table) error {
+	// IMP-MAP-001
+	for i, row := range table.Rows {
+		if i == 0 {
+			continue // skip header
+		}
+		name := row.Cells[0].Value
+		kind := row.Cells[1].Value
+		mtc.ssb.Profiles = append(mtc.ssb.Profiles, models.ProfileRef{
+			Name: name,
+			Kind: kind,
+		})
+	}
+	return nil
+}
+
+func theImporterBuildsTheACSPayload() error {
+	// IMP-MAP-001
+	result := mapping.BuildPayload(mtc.ssb, mtc.scanSetting, "test-cluster-id")
+	if result.Problem != nil {
+		mtc.problems.Add(*result.Problem)
+		return fmt.Errorf("unexpected problem building payload: %s", result.Problem.Description)
+	}
+	mtc.payload = result.Payload
+	return nil
+}
+
+func payloadScanNameMustEqual(expected string) error {
+	// IMP-MAP-001
+	if mtc.payload.ScanName != expected {
+		return fmt.Errorf("expected scanName %q, got %q", expected, mtc.payload.ScanName)
+	}
+	return nil
+}
+
+func payloadProfilesMustEqual(table *godog.Table) error {
+	// IMP-MAP-001
+	var expected []string
+	for i, row := range table.Rows {
+		if i == 0 {
+			continue // skip header
+		}
+		expected = append(expected, row.Cells[0].Value)
+	}
+	actual := mtc.payload.ScanConfig.Profiles
+	if len(actual) != len(expected) {
+		return fmt.Errorf("expected %d profiles, got %d: %v", len(expected), len(actual), actual)
+	}
+	for i := range expected {
+		if actual[i] != expected[i] {
+			return fmt.Errorf("profile[%d]: expected %q, got %q", i, expected[i], actual[i])
+		}
+	}
+	return nil
+}
+
+// --- IMP-MAP-002: Default missing profile kind to Profile ---
+
+func aProfileReferenceWithNoKind(name string) error {
+	// IMP-MAP-002
+	mtc.profiles = []models.ProfileRef{{Name: name, Kind: ""}}
+	return nil
+}
+
+func theImporterResolvesProfileReferences() error {
+	// IMP-MAP-002
+	// ResolveProfiles handles the kind defaulting internally.
+	_ = mapping.ResolveProfiles(mtc.profiles)
+	return nil
+}
+
+func profileReferenceKindMustBe(expectedKind string) error {
+	// IMP-MAP-002
+	for _, p := range mtc.profiles {
+		actual := p.ResolvedKind()
+		if actual != expectedKind {
+			return fmt.Errorf("expected resolved kind %q, got %q", expectedKind, actual)
+		}
+	}
+	return nil
+}
+
+func acsProfileNameListMustInclude(name string) error {
+	// IMP-MAP-002
+	resolved := mapping.ResolveProfiles(mtc.profiles)
+	for _, p := range resolved {
+		if p == name {
+			return nil
+		}
+	}
+	return fmt.Errorf("profile name %q not found in resolved list: %v", name, resolved)
+}
+
+// --- IMP-MAP-003, IMP-MAP-004: Convert ScanSetting schedule into ACS schedule ---
+
+func scanSettingHasSchedule(name, schedule string) error {
+	// IMP-MAP-003, IMP-MAP-004
+	mtc.scanSetting = &models.ScanSetting{
+		Name:     name,
+		Schedule: schedule,
+	}
+	return nil
+}
+
+func scanSettingBindingReferences(bindingName, settingName string) error {
+	// IMP-MAP-003, IMP-MAP-004
+	mtc.ssb = &models.ScanSettingBinding{
+		Name:            bindingName,
+		Namespace:       "default",
+		ScanSettingName: settingName,
+	}
+	return nil
+}
+
+func theImporterMapsScheduleFields() error {
+	// IMP-MAP-003, IMP-MAP-004, IMP-MAP-012..015
+	result := mapping.BuildPayload(mtc.ssb, mtc.scanSetting, "test-cluster-id")
+	if result.Problem != nil {
+		mtc.problems.Add(*result.Problem)
+		mtc.skipped[mtc.ssb.Name] = true
+		// Not an error in the test — problems are expected for invalid schedules
+		return nil
+	}
+	mtc.payload = result.Payload
+	return nil
+}
+
+func payloadOneTimeScanMustBeFalse() error {
+	// IMP-MAP-003
+	if mtc.payload == nil {
+		return fmt.Errorf("payload is nil")
+	}
+	if mtc.payload.ScanConfig.OneTimeScan {
+		return fmt.Errorf("expected oneTimeScan=false, got true")
+	}
+	return nil
+}
+
+func payloadScanScheduleMustBePresent() error {
+	// IMP-MAP-004
+	if mtc.payload == nil {
+		return fmt.Errorf("payload is nil")
+	}
+	if mtc.payload.ScanConfig.ScanSchedule == nil {
+		return fmt.Errorf("scanSchedule is nil, expected it to be present")
+	}
+	return nil
+}
+
+// --- IMP-MAP-004a..d: Schedule JSON wire format ---
+
+func theImporterBuildsPayloadJSON() error {
+	// IMP-MAP-004a..d
+	result := mapping.BuildPayload(mtc.ssb, mtc.scanSetting, "test-cluster-id")
+	if result.Problem != nil {
+		mtc.problems.Add(*result.Problem)
+		return fmt.Errorf("unexpected problem building payload: %s", result.Problem.Description)
+	}
+	mtc.payload = result.Payload
+
+	data, err := json.Marshal(mtc.payload)
+	if err != nil {
+		return fmt.Errorf("JSON marshal error: %v", err)
+	}
+	mtc.payloadJSON = data
+	return nil
+}
+
+func jsonScheduleFieldsMustMatch() error {
+	// IMP-MAP-004a: only proto Schedule fields are allowed
+	var raw map[string]interface{}
+	if err := json.Unmarshal(mtc.payloadJSON, &raw); err != nil {
+		return err
+	}
+	scanConfig, ok := raw["scanConfig"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("scanConfig not found in JSON")
+	}
+	sched, ok := scanConfig["scanSchedule"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("scanSchedule not found in JSON")
+	}
+	// Allowed proto Schedule fields
+	allowed := map[string]bool{
+		"intervalType": true,
+		"hour":         true,
+		"minute":       true,
+		"daysOfWeek":   true,
+		"daysOfMonth":  true,
+	}
+	for key := range sched {
+		if !allowed[key] {
+			return fmt.Errorf("unexpected field %q in scanSchedule JSON", key)
+		}
+	}
+	return nil
+}
+
+func jsonIntervalTypeMustBe(expected string) error {
+	// IMP-MAP-004b
+	var raw map[string]interface{}
+	if err := json.Unmarshal(mtc.payloadJSON, &raw); err != nil {
+		return err
+	}
+	scanConfig := raw["scanConfig"].(map[string]interface{})
+	sched := scanConfig["scanSchedule"].(map[string]interface{})
+	actual, ok := sched["intervalType"].(string)
+	if !ok {
+		return fmt.Errorf("intervalType not found or not a string")
+	}
+	if actual != expected {
+		return fmt.Errorf("expected intervalType %q, got %q", expected, actual)
+	}
+	return nil
+}
+
+func weeklyDaysOfWeekMustBePresent() error {
+	// IMP-MAP-004c
+	var raw map[string]interface{}
+	if err := json.Unmarshal(mtc.payloadJSON, &raw); err != nil {
+		return err
+	}
+	scanConfig := raw["scanConfig"].(map[string]interface{})
+	sched := scanConfig["scanSchedule"].(map[string]interface{})
+	intervalType, _ := sched["intervalType"].(string)
+	if intervalType != "WEEKLY" {
+		return nil // not applicable
+	}
+	dow, ok := sched["daysOfWeek"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("WEEKLY schedule missing daysOfWeek object")
+	}
+	days, ok := dow["days"].([]interface{})
+	if !ok || len(days) == 0 {
+		return fmt.Errorf("WEEKLY schedule daysOfWeek.days is missing or empty")
+	}
+	return nil
+}
+
+func monthlyDaysOfMonthMustBePresent() error {
+	// IMP-MAP-004d
+	var raw map[string]interface{}
+	if err := json.Unmarshal(mtc.payloadJSON, &raw); err != nil {
+		return err
+	}
+	scanConfig := raw["scanConfig"].(map[string]interface{})
+	sched := scanConfig["scanSchedule"].(map[string]interface{})
+	intervalType, _ := sched["intervalType"].(string)
+	if intervalType != "MONTHLY" {
+		return nil // not applicable
+	}
+	dom, ok := sched["daysOfMonth"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("MONTHLY schedule missing daysOfMonth object")
+	}
+	days, ok := dom["days"].([]interface{})
+	if !ok || len(days) == 0 {
+		return fmt.Errorf("MONTHLY schedule daysOfMonth.days is missing or empty")
+	}
+	return nil
+}
+
+func payloadFieldNamesMustMatchProto() error {
+	// IMP-MAP-004d: verify top-level JSON field names match ComplianceScanConfiguration proto
+	var raw map[string]interface{}
+	if err := json.Unmarshal(mtc.payloadJSON, &raw); err != nil {
+		return err
+	}
+	// Expected top-level proto fields
+	topLevelAllowed := map[string]bool{
+		"scanName":   true,
+		"scanConfig": true,
+		"clusters":   true,
+		"id":         true,
+	}
+	for key := range raw {
+		if !topLevelAllowed[key] {
+			return fmt.Errorf("unexpected top-level field %q in payload JSON", key)
+		}
+	}
+	// Expected scanConfig fields
+	scanConfig, ok := raw["scanConfig"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("scanConfig not found")
+	}
+	scanConfigAllowed := map[string]bool{
+		"oneTimeScan":  true,
+		"profiles":     true,
+		"scanSchedule": true,
+		"description":  true,
+	}
+	for key := range scanConfig {
+		if !scanConfigAllowed[key] {
+			return fmt.Errorf("unexpected field %q in scanConfig JSON", key)
+		}
+	}
+	return nil
+}
+
+// --- IMP-MAP-005, IMP-MAP-006: Build helpful description ---
+
+func theImporterBuildsPayloadDescription() error {
+	// IMP-MAP-005, IMP-MAP-006
+	if mtc.scanSetting == nil {
+		mtc.scanSetting = &models.ScanSetting{
+			Name:     "default",
+			Schedule: "0 0 * * *",
+		}
+	}
+	result := mapping.BuildPayload(mtc.ssb, mtc.scanSetting, "test-cluster-id")
+	if result.Problem != nil {
+		return fmt.Errorf("unexpected problem: %s", result.Problem.Description)
+	}
+	mtc.payload = result.Payload
+	return nil
+}
+
+func payloadDescriptionMustContain(expected string) error {
+	// IMP-MAP-005
+	if mtc.payload == nil {
+		return fmt.Errorf("payload is nil")
+	}
+	if !strings.Contains(mtc.payload.ScanConfig.Description, expected) {
+		return fmt.Errorf("description %q does not contain %q", mtc.payload.ScanConfig.Description, expected)
+	}
+	return nil
+}
+
+func payloadDescriptionShouldIncludeContext() error {
+	// IMP-MAP-006
+	if mtc.payload == nil {
+		return fmt.Errorf("payload is nil")
+	}
+	desc := mtc.payload.ScanConfig.Description
+	if !strings.Contains(desc, "ScanSetting") {
+		return fmt.Errorf("description %q does not include settings reference context", desc)
+	}
+	return nil
+}
+
+// --- IMP-MAP-012..015: Invalid schedule is collected as problem and skipped ---
+
+func ssbMustBeSkipped(name string) error {
+	// IMP-MAP-012
+	if !mtc.skipped[name] {
+		return fmt.Errorf("expected SSB %q to be skipped, but it was not", name)
+	}
+	return nil
+}
+
+func problemsMustIncludeCategory(category string) error {
+	// IMP-MAP-013
+	if !mtc.problems.HasCategory(category) {
+		return fmt.Errorf("expected problems to include category %q, but none found", category)
+	}
+	return nil
+}
+
+func problemMustMentionScheduleConversionFailed() error {
+	// IMP-MAP-014
+	for _, p := range mtc.problems.All() {
+		if strings.Contains(p.Description, "schedule conversion failed") {
+			return nil
+		}
+	}
+	return fmt.Errorf("no problem mentions 'schedule conversion failed'")
+}
+
+func problemFixHintMustSuggestValidCron() error {
+	// IMP-MAP-015
+	for _, p := range mtc.problems.All() {
+		if strings.Contains(p.FixHint, "cron expression") {
+			return nil
+		}
+	}
+	return fmt.Errorf("no problem fix hint suggests using a valid cron expression")
+}
+
+// --- Stubs for scenarios not yet implemented ---
 
 func kubecontextPointsToSecuredCluster(_ string) error          { return godog.ErrPending }
 func configMapHasDataKey(_, _, _, _ string) error               { return godog.ErrPending }
@@ -179,7 +594,6 @@ func kubecontextHasSSBWithProfiles(_, _, _ string) error        { return godog.E
 func kubecontextHasSSBWithTwoProfiles(_, _, _, _ string) error  { return godog.ErrPending }
 func kubecontextHasSSBWithSchedule(_, _, _ string) error        { return godog.ErrPending }
 func ssbMustBeMarkedFailed(_ string) error                      { return godog.ErrPending }
-func problemsMustIncludeCategory(_ string) error                { return godog.ErrPending }
 func problemMustMentionMismatch() error                         { return godog.ErrPending }
 func consoleMustPrintWarning() error                            { return godog.ErrPending }
 
@@ -209,7 +623,3 @@ func ssbOnCtxMustBePatched(_, _, _ string) error                      { return g
 func ssbOnCtxMustBePatchedSimple(_, _ string) error                   { return godog.ErrPending }
 func acsCreatesScanSettingOnOneCtx(_, _, _ string) error              { return godog.ErrPending }
 func importerMustWarnAboutCtxTimeout(_ string) error                  { return godog.ErrPending }
-
-func problemMustMentionScheduleConversionFailed() error { return godog.ErrPending }
-func problemFixHintMustSuggestValidCron() error         { return godog.ErrPending }
-func ssbMustBeSkipped(_ string) error                   { return godog.ErrPending }
