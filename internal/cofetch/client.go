@@ -84,7 +84,7 @@ func (c *client) ListScanSettingBindings(ctx context.Context) ([]models.ScanSett
 		return nil, fmt.Errorf("listing ScanSettingBindings: %w", err)
 	}
 
-	var result []models.ScanSettingBinding
+	result := make([]models.ScanSettingBinding, 0, len(list.Items))
 	for _, item := range list.Items {
 		ssb := models.ScanSettingBinding{
 			Name:      item.GetName(),
@@ -252,7 +252,7 @@ func ContextsFromKubeconfig(kubeconfigPath string) ([]string, error) {
 		return nil, fmt.Errorf("loading kubeconfig %q: %w", kubeconfigPath, err)
 	}
 
-	var contexts []string
+	contexts := make([]string, 0, len(config.Contexts))
 	for name := range config.Contexts {
 		contexts = append(contexts, name)
 	}

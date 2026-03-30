@@ -103,7 +103,7 @@ func (d *Discoverer) Resolve() (string, error) {
 	}
 
 	// IMP-MAP-016a: all methods failed
-	var parts []string
+	parts := make([]string, 0, len(failures))
 	for _, f := range failures {
 		parts = append(parts, fmt.Sprintf("%s: %v", f.Method, f.Err))
 	}

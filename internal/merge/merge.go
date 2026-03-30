@@ -49,7 +49,7 @@ func MergeSSBs(inputs []ClusterSSB) ([]MergedConfig, *problems.Collector) {
 		groups[name] = append(groups[name], input)
 	}
 
-	var results []MergedConfig
+	results := make([]MergedConfig, 0, len(order))
 
 	for _, name := range order {
 		entries := groups[name]

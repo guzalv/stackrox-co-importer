@@ -170,7 +170,7 @@ func (r *Runner) Run(ctx context.Context) int {
 		},
 	}
 
-	var items []report.Item
+	items := make([]report.Item, 0, len(mergedConfigs))
 	var adoptionRequests []adopt.AdoptionRequest
 	createCount, skipCount, failCount, updateCount := 0, 0, 0, 0
 
@@ -401,8 +401,9 @@ func (r *Runner) writeReportFull(collector *problems.Collector, items []report.I
 		nsScope = "openshift-compliance"
 	}
 
-	var reportProblems []report.Problem
-	for _, p := range collector.All() {
+	allProblems := collector.All()
+	reportProblems := make([]report.Problem, 0, len(allProblems))
+	for _, p := range allProblems {
 		reportProblems = append(reportProblems, report.Problem{
 			Severity:    p.Severity,
 			Category:    p.Category,
