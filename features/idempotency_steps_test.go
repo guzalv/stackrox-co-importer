@@ -65,6 +65,14 @@ func (f *fakeACSClient) UpdateScanConfig(_ context.Context, id string, _ interfa
 	return nil
 }
 
+func (f *fakeACSClient) Preflight(_ context.Context) error {
+	return nil
+}
+
+func (f *fakeACSClient) ListClusters(_ context.Context) ([]acs.ACSClusterInfo, error) {
+	return nil, nil
+}
+
 // --- Idempotency test context ---
 
 // idemTestContext shares state between idempotency scenario steps.
