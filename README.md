@@ -213,6 +213,33 @@ hack/               Helper scripts
 The project follows spec-driven development: `.feature` files in `specs/` are
 executable via [Godog][godog] and serve as both specification and test suite.
 
+### CI pipeline
+
+Every push to `main` runs the following pipeline:
+
+1. **Lint** -- golangci-lint with a curated set of linters.
+2. **Test** -- Godog scenarios and unit tests.
+3. **Build** -- binary compilation and container image build.
+4. **E2E** -- spins up a kind cluster with StackRox (lightweight mode) and
+   fake Compliance Operator CRDs, then runs acceptance tests against real
+   APIs.
+5. **Release** -- if e2e passes on `main`, auto-increments the patch version,
+   creates a Git tag, and publishes multi-arch binaries and container images
+   via GoReleaser.
+
+Pull requests run steps 1-4 but skip the release.
+
+### Releases
+
+Releases are fully automated. Every commit to `main` that passes e2e tests
+produces a new patch release with:
+
+- Multi-arch binaries (linux/darwin, amd64/arm64)
+- Multi-arch container images on `ghcr.io/guzalv/co-acs-importer`
+- SHA256 checksums
+
+No manual tagging or release action is needed.
+
 ## License
 
 See [LICENSE](LICENSE) for details.

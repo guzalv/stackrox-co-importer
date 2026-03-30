@@ -6,3 +6,4 @@ bin/
 coverage.out
 coverage.html
 /compliance-operator-importer
+dist/
