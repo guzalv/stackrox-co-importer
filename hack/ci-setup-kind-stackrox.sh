@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Set up a kind cluster with StackRox (--small mode) and fake Compliance
-# Operator CRDs for CI e2e testing.
+# Set up a kind cluster with StackRox (--small mode) and the Compliance
+# Operator (generic platform) for CI e2e testing.
 #
-# Prerequisites: kind, kubectl, helm must be in PATH.
-# Outputs ROX_ADMIN_PASSWORD to stdout on the last line.
+# Prerequisites: kind, kubectl, helm, git must be in PATH.
 #
 # USAGE: hack/ci-setup-kind-stackrox.sh
 # OUTPUT: Prints ROX_ADMIN_PASSWORD=<password> as the last line.
@@ -39,7 +38,7 @@ helm repo update stackrox
 echo "==> Generating admin password..."
 ROX_ADMIN_PASSWORD="$(openssl rand -base64 20 | tr -d '/+=' | head -c 20)"
 
-echo "==> Installing stackrox-central-services (--small mode)..."
+echo "==> Installing stackrox-central-services (small mode)..."
 kubectl create namespace stackrox || true
 
 helm install stackrox-central-services stackrox/stackrox-central-services \
@@ -64,11 +63,9 @@ kubectl -n stackrox rollout status deploy/central --timeout=300s
 
 # ── 3. Determine Central endpoint ──────────────────────────────────────────
 
-# In kind, Central is exposed via NodePort on the host.
 ROX_ENDPOINT="https://localhost:8443"
 echo "==> Central endpoint: ${ROX_ENDPOINT}"
 
-# Wait for Central API to respond.
 echo "==> Waiting for Central API to become responsive..."
 for i in $(seq 1 60); do
   if curl -ksS -u "admin:${ROX_ADMIN_PASSWORD}" \
@@ -122,31 +119,61 @@ kubectl -n stackrox rollout status deploy/sensor --timeout=300s
 echo "==> Waiting for Admission Control to be ready..."
 kubectl -n stackrox rollout status deploy/admission-control --timeout=300s
 
-# ── 5. Apply fake Compliance Operator CRDs ──────────────────────────────────
+# ── 5. Install the real Compliance Operator ─────────────────────────────────
 
-echo "==> Applying Compliance Operator CRDs..."
+echo "==> Installing Compliance Operator (generic platform mode)..."
 kubectl create namespace "${CO_NAMESPACE}" || true
 
-# Fetch CRDs from fake-compliance-operator repo.
-FAKE_CO_BASE="https://raw.githubusercontent.com/stackrox/fake-compliance-operator/main"
-kubectl apply -f "${FAKE_CO_BASE}/all_compliance_crds.yaml"
+# Clone the CO repo to get the Helm chart.
+CO_TMPDIR=$(mktemp -d)
+git clone --depth=1 https://github.com/ComplianceAsCode/compliance-operator.git "${CO_TMPDIR}/co"
 
-# Create a test Profile resource that e2e tests reference.
-cat <<EOF | kubectl apply -f -
+# Install via Helm with generic platform (non-OpenShift).
+helm install compliance-operator "${CO_TMPDIR}/co/config/helm" \
+  --namespace "${CO_NAMESPACE}" \
+  --set platform=generic \
+  --set nodeSelector=null \
+  --set tolerations=null \
+  --set replicas=1 \
+  --set resources.requests.memory=128Mi \
+  --set resources.requests.cpu=50m \
+  --set resources.limits.memory=256Mi \
+  --set resources.limits.cpu=250m \
+  --timeout 5m \
+  --wait || {
+    echo "WARNING: Compliance Operator Helm install failed."
+    echo "==> Falling back to CRD-only installation..."
+    # Apply just the CRDs so the K8s API accepts CO resources.
+    kubectl apply -f "${CO_TMPDIR}/co/config/helm/crds/" || \
+      kubectl apply -f "${CO_TMPDIR}/co/config/crd/bases/"
+  }
+
+# Verify CRDs are registered regardless of operator status.
+echo "==> Verifying CO CRDs are registered..."
+kubectl wait --for=condition=Established crd/scansettingbindings.compliance.openshift.io --timeout=30s
+kubectl wait --for=condition=Established crd/scansettings.compliance.openshift.io --timeout=30s
+kubectl wait --for=condition=Established crd/profiles.compliance.openshift.io --timeout=30s
+
+# Check if the operator created profiles; if not, create a test profile.
+echo "==> Checking for Profiles..."
+PROFILE_COUNT=$(kubectl get profiles.compliance.openshift.io -n "${CO_NAMESPACE}" --no-headers 2>/dev/null | wc -l || echo "0")
+if [ "${PROFILE_COUNT}" -eq 0 ]; then
+  echo "    No profiles found (operator may still be initializing). Creating test profile..."
+  cat <<EOF | kubectl apply -f -
 apiVersion: compliance.openshift.io/v1alpha1
 kind: Profile
 metadata:
   name: ocp4-cis
   namespace: ${CO_NAMESPACE}
 title: CIS OpenShift Benchmark
-description: Test profile for CI
+description: Test profile for CI e2e
 rules: []
 EOF
+else
+  echo "    Found ${PROFILE_COUNT} profile(s) from the operator"
+fi
 
-echo "==> Verifying CRDs are registered..."
-kubectl get crd scansettingbindings.compliance.openshift.io
-kubectl get crd scansettings.compliance.openshift.io
-kubectl get crd profiles.compliance.openshift.io
+rm -rf "${CO_TMPDIR}"
 
 # ── 6. Verify cluster ID is discoverable ────────────────────────────────────
 

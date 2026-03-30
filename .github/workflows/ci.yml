@@ -23,7 +23,7 @@ jobs:
           go-version-file: go.mod
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2.1
 
   test:
     name: Test
@@ -61,11 +61,12 @@ jobs:
           path: bin/compliance-operator-importer
           retention-days: 1
 
-  # ── E2E tests (kind + StackRox + fake CO) ──────────────────────────────────
+  # ── E2E tests (kind + StackRox + Compliance Operator) ───────────────────────
 
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [lint, test, build]
     steps:
       - uses: actions/checkout@v4
@@ -90,10 +91,10 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v4
 
-      - name: Set up kind cluster with StackRox and fake CO
+      - name: Set up kind cluster with StackRox and Compliance Operator
         id: setup
         run: |
-          output=$(hack/ci-setup-kind-stackrox.sh)
+          output=$(hack/ci-setup-kind-stackrox.sh 2>&1)
           echo "$output"
           # Extract password from last line
           password=$(echo "$output" | grep '^ROX_ADMIN_PASSWORD=' | cut -d= -f2)
@@ -119,8 +120,16 @@ jobs:
           kubectl -n stackrox logs deploy/central --tail=100 || true
           echo "=== Sensor logs ==="
           kubectl -n stackrox logs deploy/sensor --tail=50 || true
-          echo "=== CO namespace ==="
-          kubectl -n openshift-compliance get all || true
+          echo "=== CO namespace pods ==="
+          kubectl -n openshift-compliance get pods || true
+          echo "=== CO operator logs ==="
+          kubectl -n openshift-compliance logs deploy/compliance-operator --tail=50 || true
+          echo "=== CO CRDs ==="
+          kubectl get crd | grep compliance || true
+          echo "=== CO resources ==="
+          kubectl -n openshift-compliance get profiles,scansettings,scansettingbindings || true
+          echo "=== Cluster ID ConfigMap ==="
+          kubectl -n stackrox get configmap admission-control -o yaml || true
 
   # ── Auto-release (only on main, after e2e passes) ─────────────────────────
 

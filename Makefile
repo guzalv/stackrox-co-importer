@@ -29,7 +29,7 @@ spec-coverage:
 
 ## Run e2e/acceptance tests against a real cluster (requires env vars, see CLAUDE.md)
 test-e2e:
-	go test -v -tags=e2e -timeout=5m ./e2e/...
+	go test -v -tags=e2e -timeout=10m ./e2e/...
 
 ## Smoke test: build + dry-run against real cluster (quick real-cluster validation)
 smoke:
@@ -42,7 +42,9 @@ build:
 
 ## Build container image for host architecture (IMP-IMG-004)
 image: build
+	cp bin/$(BINARY) $(BINARY)
 	docker build -t $(IMAGE):$(TAG) .
+	rm -f $(BINARY)
 
 ## Build and push multi-arch images + manifest (IMP-IMG-003, IMP-IMG-004)
 image-push:
