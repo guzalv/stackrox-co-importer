@@ -95,10 +95,9 @@ jobs:
       - name: Set up kind cluster with StackRox and Compliance Operator
         id: setup
         run: |
-          output=$(hack/ci-setup-kind-stackrox.sh 2>&1)
-          echo "$output"
-          # Extract password from last line
-          password=$(echo "$output" | grep '^ROX_ADMIN_PASSWORD=' | cut -d= -f2)
+          # Run setup script, tee output to capture password while showing logs.
+          hack/ci-setup-kind-stackrox.sh | tee /tmp/setup-output.log
+          password=$(grep '^ROX_ADMIN_PASSWORD=' /tmp/setup-output.log | cut -d= -f2)
           echo "rox-password=${password}" >> "$GITHUB_OUTPUT"
         env:
           CO_NAMESPACE: openshift-compliance

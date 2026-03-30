@@ -55,7 +55,8 @@ helm install stackrox-central-services stackrox/stackrox-central-services \
   --set central.db.resources.limits.memory=2Gi \
   --set central.db.resources.limits.cpu=1 \
   --set scanner.disable=true \
-  --timeout 5m \
+  --set scannerV4.disable=true \
+  --timeout 8m \
   --wait
 
 echo "==> Waiting for Central to be ready..."
