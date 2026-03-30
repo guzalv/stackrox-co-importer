@@ -4,7 +4,9 @@ package e2e
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,9 +59,9 @@ type reportProblem struct {
 }
 
 type report struct {
-	Meta     reportMeta     `json:"meta"`
-	Counts   reportCounts   `json:"counts"`
-	Items    []reportItem   `json:"items"`
+	Meta     reportMeta      `json:"meta"`
+	Counts   reportCounts    `json:"counts"`
+	Items    []reportItem    `json:"items"`
 	Problems []reportProblem `json:"problems"`
 }
 
@@ -80,6 +82,16 @@ type acsScanConfigListResponse struct {
 // Test helpers
 // ---------------------------------------------------------------------------
 
+// runID generates a 6-char random hex suffix for unique resource names.
+// IMP-ACC-019
+func runID() string {
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("failed to generate run ID: %v", err))
+	}
+	return hex.EncodeToString(b)
+}
+
 func requireEnv(t *testing.T, key string) string {
 	t.Helper()
 	v := os.Getenv(key)
@@ -87,6 +99,14 @@ func requireEnv(t *testing.T, key string) string {
 		t.Skipf("required env var %s not set — skipping", key)
 	}
 	return v
+}
+
+func coNamespace(t *testing.T) string {
+	t.Helper()
+	if v := os.Getenv("CO_NAMESPACE"); v != "" {
+		return v
+	}
+	return "openshift-compliance"
 }
 
 func importerBin(t *testing.T) string {
@@ -216,7 +236,8 @@ func deleteACSConfig(t *testing.T, id string) {
 
 	req, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
-		t.Fatalf("building delete request: %v", err)
+		t.Logf("warning: failed to build delete request for ACS config %s: %v", id, err)
+		return
 	}
 	setAuth(t, req)
 
@@ -241,12 +262,104 @@ func configNames(configs []acsScanConfig) map[string]bool {
 }
 
 // commonArgs returns the common flags used in most importer invocations.
+// IMP-ACC-022: includes --co-namespace to scope to test resources.
 func commonArgs(t *testing.T) []string {
 	t.Helper()
 	endpoint := requireEnv(t, "ROX_ENDPOINT")
+	ns := coNamespace(t)
 	return []string{
 		"--endpoint", endpoint,
 		"--insecure-skip-verify",
+		"--co-namespace", ns,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CO resource helpers (IMP-ACC-018)
+// ---------------------------------------------------------------------------
+
+// createScanSetting creates a ScanSetting in the given namespace via kubectl.
+func createScanSetting(t *testing.T, namespace, name, schedule string) {
+	t.Helper()
+	yaml := fmt.Sprintf(`apiVersion: compliance.openshift.io/v1alpha1
+kind: ScanSetting
+metadata:
+  name: %s
+  namespace: %s
+schedule: "%s"
+roles:
+  - master
+  - worker
+`, name, namespace, schedule)
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(yaml)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to create ScanSetting %s/%s: %v\n%s", namespace, name, err, string(out))
+	}
+	t.Logf("created ScanSetting %s/%s", namespace, name)
+}
+
+// createScanSettingBinding creates a ScanSettingBinding in the given namespace via kubectl.
+func createScanSettingBinding(t *testing.T, namespace, name, scanSettingName string, profiles []string) {
+	t.Helper()
+
+	var profileEntries strings.Builder
+	for _, p := range profiles {
+		fmt.Fprintf(&profileEntries, `  - name: %s
+    kind: Profile
+    apiGroup: compliance.openshift.io/v1alpha1
+`, p)
+	}
+
+	yaml := fmt.Sprintf(`apiVersion: compliance.openshift.io/v1alpha1
+kind: ScanSettingBinding
+metadata:
+  name: %s
+  namespace: %s
+profiles:
+%ssettingsRef:
+  name: %s
+  kind: ScanSetting
+  apiGroup: compliance.openshift.io/v1alpha1
+`, name, namespace, profileEntries.String(), scanSettingName)
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(yaml)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to create ScanSettingBinding %s/%s: %v\n%s", namespace, name, err, string(out))
+	}
+	t.Logf("created ScanSettingBinding %s/%s", namespace, name)
+}
+
+// deleteResource deletes a CO resource via kubectl. Errors are logged but not fatal
+// (used in t.Cleanup). The gvr should be the plural resource name, e.g. "scansettings"
+// or "scansettingbindings".
+func deleteResource(t *testing.T, namespace, gvr, name string) {
+	t.Helper()
+	fullGVR := gvr + ".compliance.openshift.io"
+	cmd := exec.Command("kubectl", "delete", fullGVR, name,
+		"-n", namespace, "--ignore-not-found")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Logf("warning: failed to delete %s %s/%s: %v\n%s", gvr, namespace, name, err, string(out))
+		return
+	}
+	t.Logf("deleted %s %s/%s", gvr, namespace, name)
+}
+
+// cleanupACSConfigByName finds and deletes any ACS scan config with the given name.
+// Used in t.Cleanup to remove configs created during tests.
+func cleanupACSConfigByName(t *testing.T, name string) {
+	t.Helper()
+	configs := listACSConfigs(t)
+	for _, c := range configs {
+		if c.ScanName == name {
+			deleteACSConfig(t, c.ID)
+			t.Logf("deleted ACS scan config %q (id=%s)", c.ScanName, c.ID)
+		}
 	}
 }
 
@@ -295,17 +408,32 @@ func TestIMP_ACC_013_BasicAuthPreflight(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // A3 — Dry-run side-effect safety (IMP-ACC-003)
+// IMP-ACC-018, IMP-ACC-019, IMP-ACC-020, IMP-ACC-021, IMP-ACC-022
 // ---------------------------------------------------------------------------
 
 // IMP-ACC-003
 func TestIMP_ACC_003_DryRunNoWrites(t *testing.T) {
-	args := commonArgs(t)
+	id := runID()
+	ns := coNamespace(t)
+	ssName := "e2e-ss-" + id
+	ssbName := "e2e-dryrun-" + id
+
+	// IMP-ACC-018: create own CO resources.
+	createScanSetting(t, ns, ssName, "0 2 * * *")
+	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-cis"})
+
+	// IMP-ACC-020: clean up ALL resources via t.Cleanup, even on failure.
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", ssbName)
+		deleteResource(t, ns, "scansettings", ssName)
+		cleanupACSConfigByName(t, ssbName)
+	})
 
 	// Snapshot ACS configs before the run.
 	configsBefore := listACSConfigs(t)
 
 	reportPath := filepath.Join(t.TempDir(), "dryrun-report.json")
-	args = append(args,
+	args := append(commonArgs(t),
 		"--dry-run",
 		"--report-json", reportPath,
 	)
@@ -333,6 +461,16 @@ func TestIMP_ACC_003_DryRunNoWrites(t *testing.T) {
 		}
 	}
 
+	// problems[] should be present and contain description + fixHint for each problematic resource.
+	for _, p := range r.Problems {
+		if p.Description == "" {
+			t.Errorf("problem missing description: %+v", p)
+		}
+		if p.FixHint == "" {
+			t.Errorf("problem missing fixHint: %+v", p)
+		}
+	}
+
 	// Verify no configs were actually created.
 	configsAfter := listACSConfigs(t)
 	namesBefore := configNames(configsBefore)
@@ -345,18 +483,29 @@ func TestIMP_ACC_003_DryRunNoWrites(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // A4 — Apply creates expected configs (IMP-ACC-004)
+// IMP-ACC-018, IMP-ACC-019, IMP-ACC-020, IMP-ACC-021, IMP-ACC-022
 // ---------------------------------------------------------------------------
 
 // IMP-ACC-004
 func TestIMP_ACC_004_ApplyCreatesConfigs(t *testing.T) {
-	args := commonArgs(t)
+	id := runID()
+	ns := coNamespace(t)
+	ssName := "e2e-ss-" + id
+	ssbName := "e2e-apply-" + id
 
-	// Snapshot ACS configs before apply.
-	configsBefore := listACSConfigs(t)
-	namesBefore := configNames(configsBefore)
+	// IMP-ACC-018: create own CO resources.
+	createScanSetting(t, ns, ssName, "0 2 * * *")
+	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-cis"})
+
+	// IMP-ACC-020: clean up ALL resources via t.Cleanup, even on failure.
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", ssbName)
+		deleteResource(t, ns, "scansettings", ssName)
+		cleanupACSConfigByName(t, ssbName)
+	})
 
 	reportPath := filepath.Join(t.TempDir(), "apply-report.json")
-	args = append(args,
+	args := append(commonArgs(t),
 		"--report-json", reportPath,
 	)
 
@@ -368,66 +517,75 @@ func TestIMP_ACC_004_ApplyCreatesConfigs(t *testing.T) {
 
 	r := parseReport(t, reportPath)
 
-	// Expect at least some discovered bindings.
+	// Expect at least one discovered binding (the one we created).
 	if r.Counts.Discovered == 0 {
-		t.Fatal("report shows 0 discovered bindings — expected at least one CO binding in the cluster")
+		t.Fatal("report shows 0 discovered bindings — expected at least one")
 	}
 
-	// Clean up any configs created by this test.
-	configsAfter := listACSConfigs(t)
-	t.Cleanup(func() {
-		for _, c := range configsAfter {
-			if !namesBefore[c.ScanName] {
-				deleteACSConfig(t, c.ID)
-			}
-		}
-	})
-
-	// Verify created configs exist in ACS.
-	namesAfter := configNames(configsAfter)
-	createCount := 0
+	// Report should show action=create for our SSB.
+	foundCreate := false
 	for _, item := range r.Items {
-		if item.Action == "create" {
-			createCount++
-			name := item.Source.BindingName
-			if name != "" && !namesAfter[name] {
-				t.Errorf("report says %q was created but it is not in ACS configs", name)
-			}
+		if item.Source.BindingName == ssbName && item.Action == "create" {
+			foundCreate = true
+			break
 		}
 	}
-	if r.Counts.Create != createCount {
-		t.Errorf("counts.create=%d but found %d items with action=create", r.Counts.Create, createCount)
+	if !foundCreate {
+		t.Errorf("report does not show action=create for %q", ssbName)
+	}
+
+	// Verify ACS config was actually created.
+	configs := listACSConfigs(t)
+	found := false
+	for _, c := range configs {
+		if c.ScanName == ssbName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ACS scan config %q not found after apply", ssbName)
 	}
 }
 
 // ---------------------------------------------------------------------------
 // A5 — Idempotency on second run (IMP-ACC-005)
+// IMP-ACC-018, IMP-ACC-019, IMP-ACC-020, IMP-ACC-021, IMP-ACC-022
 // ---------------------------------------------------------------------------
 
 // IMP-ACC-005
 func TestIMP_ACC_005_SecondRunIdempotent(t *testing.T) {
-	args := commonArgs(t)
+	id := runID()
+	ns := coNamespace(t)
+	ssName := "e2e-ss-" + id
+	ssbName := "e2e-idem-" + id
+
+	// IMP-ACC-018: create own CO resources.
+	createScanSetting(t, ns, ssName, "0 2 * * *")
+	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-cis"})
+
+	// IMP-ACC-020: clean up ALL resources via t.Cleanup, even on failure.
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", ssbName)
+		deleteResource(t, ns, "scansettings", ssName)
+		cleanupACSConfigByName(t, ssbName)
+	})
 
 	// First run: apply.
 	reportPath1 := filepath.Join(t.TempDir(), "first-run.json")
-	firstArgs := append(append([]string{}, args...), "--report-json", reportPath1)
+	firstArgs := append(commonArgs(t), "--report-json", reportPath1)
 
 	_, _, exitCode := runImporter(t, firstArgs...)
 	if exitCode != 0 && exitCode != 2 {
 		t.Fatalf("first run: expected exit code 0 or 2, got %d", exitCode)
 	}
 
-	// Snapshot configs after first run for cleanup.
+	// Snapshot configs after first run.
 	configsAfterFirst := listACSConfigs(t)
-	t.Cleanup(func() {
-		// We don't clean up here — TestIMP_ACC_004 or manual cleanup handles it.
-		// But if this test is run standalone, clean up configs we created.
-		_ = configsAfterFirst
-	})
 
 	// Second run: apply again.
 	reportPath2 := filepath.Join(t.TempDir(), "second-run.json")
-	secondArgs := append(append([]string{}, args...), "--report-json", reportPath2)
+	secondArgs := append(commonArgs(t), "--report-json", reportPath2)
 
 	_, _, exitCode = runImporter(t, secondArgs...)
 	if exitCode != 0 && exitCode != 2 {
@@ -441,10 +599,10 @@ func TestIMP_ACC_005_SecondRunIdempotent(t *testing.T) {
 		t.Errorf("second run created %d configs — expected 0 (idempotent)", r.Counts.Create)
 	}
 
-	// All items that were created in the first run should now be skipped.
+	// Our SSB should show action=skip on the second run.
 	for _, item := range r.Items {
-		if item.Action == "create" {
-			t.Errorf("second run has action=create for %q — expected skip", item.Source.BindingName)
+		if item.Source.BindingName == ssbName && item.Action == "create" {
+			t.Errorf("second run has action=create for %q — expected skip", ssbName)
 		}
 	}
 
@@ -458,19 +616,35 @@ func TestIMP_ACC_005_SecondRunIdempotent(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // A6 — Existing config behavior (IMP-ACC-006, IMP-ACC-014)
+// IMP-ACC-018, IMP-ACC-019, IMP-ACC-020, IMP-ACC-021, IMP-ACC-022
 // ---------------------------------------------------------------------------
 
 // IMP-ACC-006
 func TestIMP_ACC_006_SkipExistingWithoutOverwrite(t *testing.T) {
-	args := commonArgs(t)
+	id := runID()
+	ns := coNamespace(t)
+	ssName := "e2e-ss-" + id
+	ssbName := "e2e-exist-" + id
 
-	// Ensure configs exist by running apply first.
-	firstArgs := append(append([]string{}, args...), "--report-json", filepath.Join(t.TempDir(), "setup.json"))
-	runImporter(t, firstArgs...)
+	// IMP-ACC-018: create own CO resources.
+	createScanSetting(t, ns, ssName, "0 2 * * *")
+	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-cis"})
 
-	// Run again without --overwrite-existing (default create-only mode).
+	// IMP-ACC-020: clean up ALL resources via t.Cleanup, even on failure.
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", ssbName)
+		deleteResource(t, ns, "scansettings", ssName)
+		cleanupACSConfigByName(t, ssbName)
+	})
+
+	// First run: create the ACS config.
+	setupReport := filepath.Join(t.TempDir(), "setup.json")
+	setupArgs := append(commonArgs(t), "--report-json", setupReport)
+	runImporter(t, setupArgs...)
+
+	// Second run: without --overwrite-existing (default create-only mode).
 	reportPath := filepath.Join(t.TempDir(), "skip-existing.json")
-	secondArgs := append(append([]string{}, args...), "--report-json", reportPath)
+	secondArgs := append(commonArgs(t), "--report-json", reportPath)
 
 	_, _, exitCode := runImporter(t, secondArgs...)
 	if exitCode != 0 && exitCode != 2 {
@@ -509,15 +683,30 @@ func TestIMP_ACC_006_SkipExistingWithoutOverwrite(t *testing.T) {
 
 // IMP-ACC-014
 func TestIMP_ACC_014_OverwriteExistingUpdates(t *testing.T) {
-	args := commonArgs(t)
+	id := runID()
+	ns := coNamespace(t)
+	ssName := "e2e-ss-" + id
+	ssbName := "e2e-exist-" + id
 
-	// Ensure configs exist by running apply first.
-	firstArgs := append(append([]string{}, args...), "--report-json", filepath.Join(t.TempDir(), "setup.json"))
-	runImporter(t, firstArgs...)
+	// IMP-ACC-018: create own CO resources.
+	createScanSetting(t, ns, ssName, "0 2 * * *")
+	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-cis"})
 
-	// Run with --overwrite-existing.
+	// IMP-ACC-020: clean up ALL resources via t.Cleanup, even on failure.
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", ssbName)
+		deleteResource(t, ns, "scansettings", ssName)
+		cleanupACSConfigByName(t, ssbName)
+	})
+
+	// First run: create the ACS config.
+	setupReport := filepath.Join(t.TempDir(), "setup.json")
+	setupArgs := append(commonArgs(t), "--report-json", setupReport)
+	runImporter(t, setupArgs...)
+
+	// Second run: with --overwrite-existing.
 	reportPath := filepath.Join(t.TempDir(), "overwrite.json")
-	overwriteArgs := append(append([]string{}, args...),
+	overwriteArgs := append(commonArgs(t),
 		"--overwrite-existing",
 		"--report-json", reportPath,
 	)
@@ -534,10 +723,19 @@ func TestIMP_ACC_014_OverwriteExistingUpdates(t *testing.T) {
 		t.Errorf("expected mode=create-or-update, got %q", r.Meta.Mode)
 	}
 
-	// With --overwrite-existing, previously existing configs should not be
-	// skipped — they should be updated (or created if new).
-	if r.Counts.Skip > 0 {
-		t.Logf("warning: %d configs were still skipped with --overwrite-existing", r.Counts.Skip)
+	// With --overwrite-existing, our SSB should show action=update, not skip.
+	foundUpdate := false
+	for _, item := range r.Items {
+		if item.Source.BindingName == ssbName {
+			if item.Action == "update" {
+				foundUpdate = true
+			} else if item.Action == "skip" {
+				t.Errorf("expected action=update for %q with --overwrite-existing, got skip", ssbName)
+			}
+		}
+	}
+	if !foundUpdate {
+		t.Logf("warning: did not find action=update for %q in report items", ssbName)
 	}
 }
 
@@ -591,17 +789,32 @@ func TestIMP_ACC_007_InvalidTokenFailsFast(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // A9 — Auto-discovery (IMP-ACC-017)
+// IMP-ACC-018, IMP-ACC-019, IMP-ACC-020, IMP-ACC-021, IMP-ACC-022
 // ---------------------------------------------------------------------------
 
 // IMP-ACC-017
 func TestIMP_ACC_017_AutoDiscovery(t *testing.T) {
-	args := commonArgs(t)
+	id := runID()
+	ns := coNamespace(t)
+	ssName := "e2e-ss-" + id
+	ssbName := "e2e-disco-" + id
+
+	// IMP-ACC-018: create own CO resources.
+	createScanSetting(t, ns, ssName, "0 2 * * *")
+	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-cis"})
+
+	// IMP-ACC-020: clean up ALL resources via t.Cleanup, even on failure.
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", ssbName)
+		deleteResource(t, ns, "scansettings", ssName)
+		cleanupACSConfigByName(t, ssbName)
+	})
 
 	// Run in dry-run mode (no writes) without providing an explicit cluster ID.
 	// The importer should auto-discover the cluster ID from the
 	// admission-control ConfigMap's cluster-id key.
 	reportPath := filepath.Join(t.TempDir(), "autodiscovery.json")
-	args = append(args,
+	args := append(commonArgs(t),
 		"--dry-run",
 		"--report-json", reportPath,
 	)
@@ -620,10 +833,6 @@ func TestIMP_ACC_017_AutoDiscovery(t *testing.T) {
 		t.Errorf("auto-discovery: 0 bindings discovered — cluster ID may not have been resolved\nstdout: %s\nstderr: %s",
 			stdout, stderr)
 	}
-
-	// Verify output mentions cluster discovery (check stdout/stderr for indication).
-	combined := stdout + stderr
-	_ = combined // Auto-discovery success is inferred from a non-zero discovered count.
 
 	fmt.Fprintf(os.Stderr, "auto-discovery report: discovered=%d, create=%d, skip=%d, failed=%d\n",
 		r.Counts.Discovered, r.Counts.Create, r.Counts.Skip, r.Counts.Failed)
