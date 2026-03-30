@@ -52,14 +52,6 @@ func (f *fakeACSClient) CreateScanConfig(_ context.Context, _ interface{}) (stri
 	return f.createdID, nil
 }
 
-func (f *fakeACSClient) Preflight(_ context.Context) error {
-	return nil
-}
-
-func (f *fakeACSClient) ListClusters(_ context.Context) ([]acs.ACSClusterInfo, error) {
-	return nil, nil
-}
-
 func (f *fakeACSClient) UpdateScanConfig(_ context.Context, id string, _ interface{}) error {
 	f.callCount++
 	f.putCalled = true
