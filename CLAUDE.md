@@ -95,7 +95,7 @@ as a blocker — don't silently skip.
 **Test cluster environment:**
 
 ```bash
-export ROX_ENDPOINT="https://central-stackrox.apps.ga-ocp4-cron.ocp.infra.rox.systems"
+export ROX_ENDPOINT="https://central-stackrox.apps.rox-26032-cluster-1.ocp.infra.rox.systems"
 export ROX_ADMIN_USER="admin"
 export ROX_ADMIN_PASSWORD="admin"
 export CO_NAMESPACE="openshift-compliance"
