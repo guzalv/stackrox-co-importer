@@ -120,7 +120,7 @@ func (c *httpClient) do(req *http.Request) ([]byte, error) {
 // IMP-CLI-015
 func (c *httpClient) Preflight(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.baseURL+"/v2/compliance/scan/configurations?pagination.limit=1", nil)
+		c.baseURL+"/v2/compliance/scan/configurations?pagination.limit=1", http.NoBody)
 	if err != nil {
 		return fmt.Errorf("building preflight request: %w", err)
 	}
@@ -131,7 +131,7 @@ func (c *httpClient) Preflight(ctx context.Context) error {
 // ListScanConfigs retrieves all ACS scan configurations.
 func (c *httpClient) ListScanConfigs(ctx context.Context) ([]ScanConfig, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.baseURL+"/v2/compliance/scan/configurations?pagination.limit=1000", nil)
+		c.baseURL+"/v2/compliance/scan/configurations?pagination.limit=1000", http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("building list request: %w", err)
 	}
@@ -206,7 +206,7 @@ func (c *httpClient) UpdateScanConfig(ctx context.Context, id string, payload in
 // ListClusters retrieves all clusters from ACS Central.
 func (c *httpClient) ListClusters(ctx context.Context) ([]ACSClusterInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.baseURL+"/v1/clusters", nil)
+		c.baseURL+"/v1/clusters", http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("building clusters request: %w", err)
 	}

@@ -486,20 +486,21 @@ func (a *adoptionK8sAdapter) ScanSettingExists(ctxName, namespace, name string) 
 
 func (a *adoptionK8sAdapter) PatchSSBSettingsRef(ctxName, namespace, ssbName, newSettingsRef string) error {
 	for _, src := range a.sources {
-		if src.contextName == ctxName {
-			patch := map[string]interface{}{
-				"settingsRef": map[string]interface{}{
-					"name": newSettingsRef,
-				},
-			}
-			patchBytes, err := json.Marshal(patch)
-			if err != nil {
-				return fmt.Errorf("marshaling patch: %w", err)
-			}
-			_, err = src.dynClient.Resource(ssbGVR).Namespace(namespace).Patch(
-				context.Background(), ssbName, types.MergePatchType, patchBytes, metav1.PatchOptions{})
-			return err
+		if src.contextName != ctxName {
+			continue
 		}
+		patch := map[string]interface{}{
+			"settingsRef": map[string]interface{}{
+				"name": newSettingsRef,
+			},
+		}
+		patchBytes, err := json.Marshal(patch)
+		if err != nil {
+			return fmt.Errorf("marshaling patch: %w", err)
+		}
+		_, err = src.dynClient.Resource(ssbGVR).Namespace(namespace).Patch(
+			context.Background(), ssbName, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+		return err
 	}
 	return fmt.Errorf("context %q not found in sources", ctxName)
 }

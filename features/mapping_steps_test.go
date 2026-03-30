@@ -138,14 +138,12 @@ type mappingTestContext struct {
 	payload     *models.ACSPayload
 	payloadJSON []byte
 	problems    *problems.Collector
-	err         error
-	skipped     map[string]bool // tracks skipped SSBs
+	skipped map[string]bool // tracks skipped SSBs
 
 	// Cluster discovery
-	fakeKube      *fakeKubeReader
-	fakeACSList   *fakeACSClusterLister
-	discoverer    *discover.Discoverer
-	resolvedID    string
+	fakeKube    *fakeKubeReader
+	fakeACSList *fakeACSClusterLister
+	resolvedID  string
 	discoveryErr  error
 
 	// Multicluster
@@ -506,7 +504,7 @@ func theImporterBuildsPayloadJSON() error {
 
 	data, err := json.Marshal(mtc.payload)
 	if err != nil {
-		return fmt.Errorf("JSON marshal error: %v", err)
+		return fmt.Errorf("JSON marshal error: %w", err)
 	}
 	mtc.payloadJSON = data
 	return nil
@@ -820,7 +818,7 @@ func resolveACSClusterID(_ string) error {
 func resolvedClusterIDMustBe(expected string) error {
 	// IMP-MAP-016, IMP-MAP-017, IMP-MAP-018
 	if mtc.discoveryErr != nil {
-		return fmt.Errorf("expected cluster ID %q but got error: %v", expected, mtc.discoveryErr)
+		return fmt.Errorf("expected cluster ID %q but got error: %w", expected, mtc.discoveryErr)
 	}
 	if mtc.resolvedID != expected {
 		return fmt.Errorf("expected resolved cluster ID %q, got %q", expected, mtc.resolvedID)
@@ -1192,17 +1190,18 @@ func importerRunsAdoptionStep() error {
 func ssbSettingsRefMustBePatched(ssbName, expectedSetting string) error {
 	// IMP-ADOPT-001, IMP-ADOPT-002
 	for _, as := range mtc.adoptionSSBs {
-		if as.SSBName == ssbName {
-			key := as.Context + "/" + as.Namespace + "/" + ssbName
-			patched, ok := mtc.adoptionK8s.patchedSSBs[key]
-			if !ok {
-				return fmt.Errorf("SSB %q was not patched", ssbName)
-			}
-			if patched != expectedSetting {
-				return fmt.Errorf("SSB %q patched to %q, expected %q", ssbName, patched, expectedSetting)
-			}
-			return nil
+		if as.SSBName != ssbName {
+			continue
 		}
+		key := as.Context + "/" + as.Namespace + "/" + ssbName
+		patched, ok := mtc.adoptionK8s.patchedSSBs[key]
+		if !ok {
+			return fmt.Errorf("SSB %q was not patched", ssbName)
+		}
+		if patched != expectedSetting {
+			return fmt.Errorf("SSB %q patched to %q, expected %q", ssbName, patched, expectedSetting)
+		}
+		return nil
 	}
 	return fmt.Errorf("SSB %q not found in adoption state", ssbName)
 }
@@ -1269,7 +1268,7 @@ func ssbMustNotBeModified() error {
 func importerMustNotExitWithError() error {
 	// IMP-ADOPT-004..006, IMP-ADOPT-008
 	if mtc.adoptionExitErr != nil {
-		return fmt.Errorf("expected no exit error, got: %v", mtc.adoptionExitErr)
+		return fmt.Errorf("expected no exit error, got: %w", mtc.adoptionExitErr)
 	}
 	return nil
 }

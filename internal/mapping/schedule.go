@@ -104,13 +104,13 @@ func ConvertCronToACSSchedule(cron string) (*models.ACSSchedule, error) {
 	}
 }
 
-func parseField(val, name string, min, max int) (int32, error) {
+func parseField(val, name string, lo, hi int) (int32, error) {
 	n, err := strconv.Atoi(val)
 	if err != nil {
 		return 0, fmt.Errorf("cron field %q (value %q) is not a valid integer; use a plain number or \"*\" for %s", name, val, name)
 	}
-	if n < min || n > max {
-		return 0, fmt.Errorf("cron field %q value %d is out of range [%d, %d]", name, n, min, max)
+	if n < lo || n > hi {
+		return 0, fmt.Errorf("cron field %q value %d is out of range [%d, %d]", name, n, lo, hi)
 	}
 	return int32(n), nil
 }
