@@ -5,9 +5,11 @@ This document is the acceptance test contract for real-cluster validation.
 ## Preconditions
 
 - `kubectl`, `curl`, `jq` installed.
-- Logged into target cluster containing Compliance Operator resources.
+- Logged into target cluster with Compliance Operator installed.
 - Central endpoint reachable from runner.
 - Importer binary built locally.
+- RBAC: test runner MUST be able to create and delete ScanSettingBindings and
+  ScanSettings in the test namespace.
 
 Set environment:
 
@@ -21,6 +23,25 @@ export IMPORTER_BIN="./bin/co-acs-scan-importer"
 # For multi-cluster: merge kubeconfigs
 export KUBECONFIG="~/.kube/config:~/.kube/config-secured-cluster"
 ```
+
+## Test isolation rules
+
+Tests MUST be self-contained and safe for parallel execution:
+
+- **IMP-ACC-018**: each test MUST create its own CO resources (ScanSettingBindings,
+  ScanSettings) at setup and delete them at teardown. Tests MUST NOT depend on
+  pre-existing CO resources on the cluster.
+- **IMP-ACC-019**: resource names MUST include a unique test-run identifier
+  (e.g., a short random suffix or UUID fragment) so that concurrent test runs
+  do not collide. Example: `e2e-cis-<run-id>`.
+- **IMP-ACC-020**: each test MUST clean up all resources it creates — both CO
+  resources (ScanSettingBindings, ScanSettings) and ACS scan configurations —
+  via `t.Cleanup` or equivalent teardown, even on failure.
+- **IMP-ACC-021**: tests MUST NOT depend on execution order. Each test sets up
+  its own state independently.
+- **IMP-ACC-022**: the importer MUST be invoked with `--co-namespace` pointing
+  to the test namespace and `--context` limiting to the test context, so that
+  it only processes resources created by that test.
 
 ## Acceptance checks
 
@@ -70,11 +91,18 @@ curl -ksS \
 
 - **IMP-ACC-003**: dry-run MUST produce no writes.
 
-Command (auto-discovery mode):
+Setup:
+
+1. Create a ScanSetting `e2e-ss-<run-id>` with schedule `0 2 * * *`.
+2. Create a ScanSettingBinding `e2e-dryrun-<run-id>` referencing the ScanSetting
+   and at least one profile.
+
+Command:
 
 ```bash
 "${IMPORTER_BIN}" \
   --endpoint "${ROX_ENDPOINT}" \
+  --co-namespace "${CO_NAMESPACE}" \
   --dry-run \
   --report-json "/tmp/co-acs-import-dryrun.json"
 ```
@@ -82,52 +110,65 @@ Command (auto-discovery mode):
 Pass conditions:
 
 - exit code is `0` or `2`,
-- `/tmp/co-acs-import-dryrun.json` exists and is valid JSON,
-- actions listed as planned only (no applied create/update markers),
+- report file exists and is valid JSON,
+- report shows planned actions only (no `acsScanConfigId` on create items),
+- no new ACS scan configs appear (before/after snapshot),
 - `problems[]` is present and contains `description` + `fixHint` for each problematic resource.
+
+Teardown: delete the ScanSettingBinding and ScanSetting.
 
 ### A4 - Apply creates expected configs
 
 - **IMP-ACC-004**: apply mode MUST create missing target ACS configs.
 
-Command (auto-discovery mode):
+Setup:
 
-```bash
-"${IMPORTER_BIN}" \
-  --endpoint "${ROX_ENDPOINT}" \
-  --report-json "/tmp/co-acs-import-apply.json"
-```
-
-Verify:
-
-```bash
-curl -ksS \
-  -H "Authorization: Bearer ${ROX_API_TOKEN}" \
-  "${ROX_ENDPOINT}/v2/compliance/scan/configurations?pagination.limit=200" | \
-  jq '.configurations[] | {id, scanName, profiles: .scanConfig.profiles, description: .scanConfig.description}'
-```
-
-Pass conditions:
-
-- expected imported scan names exist,
-- profile lists match expected binding mappings.
-
-### A5 - Idempotency on second run
-
-- **IMP-ACC-005**: second run with same inputs MUST be no-op.
+1. Create a ScanSetting `e2e-ss-<run-id>` with schedule `0 2 * * *`.
+2. Create a ScanSettingBinding `e2e-apply-<run-id>` referencing the ScanSetting
+   and profile `ocp4-cis` (or any profile known to exist on the cluster).
 
 Command:
 
 ```bash
 "${IMPORTER_BIN}" \
   --endpoint "${ROX_ENDPOINT}" \
+  --co-namespace "${CO_NAMESPACE}" \
+  --report-json "/tmp/co-acs-import-apply.json"
+```
+
+Pass conditions:
+
+- exit code is `0` or `2`,
+- report shows `action=create` for `e2e-apply-<run-id>`,
+- ACS API scan config list includes a config with `scanName=e2e-apply-<run-id>`.
+
+Teardown: delete the ACS scan config, ScanSettingBinding, and ScanSetting.
+
+### A5 - Idempotency on second run
+
+- **IMP-ACC-005**: second run with same inputs MUST be no-op.
+
+Setup:
+
+1. Create CO resources as in A4 (`e2e-idem-<run-id>`).
+2. Run importer in apply mode (first run).
+
+Command (second run):
+
+```bash
+"${IMPORTER_BIN}" \
+  --endpoint "${ROX_ENDPOINT}" \
+  --co-namespace "${CO_NAMESPACE}" \
   --report-json "/tmp/co-acs-import-second-run.json"
 ```
 
 Pass conditions:
 
-- report shows skip actions for already-existing scan names,
-- no net changes in ACS list output.
+- report shows `action=skip` for `e2e-idem-<run-id>`,
+- `counts.create` is 0 on second run,
+- no net changes in ACS config list between first and second run.
+
+Teardown: delete ACS scan config, ScanSettingBinding, and ScanSetting.
 
 ### A6 - Existing config behavior
 
@@ -135,16 +176,22 @@ Pass conditions:
   and recorded in `problems[]`.
 - **IMP-ACC-014**: with `--overwrite-existing`, existing scan names MUST be updated via PUT.
 
-Procedure (create-only):
+Setup:
 
-1. Manually modify one imported ACS scan config (name unchanged).
-2. Re-run importer without `--overwrite-existing`.
-3. Verify that modified existing config is not updated and is captured as skipped conflict.
+1. Create CO resources (`e2e-exist-<run-id>`).
+2. Run importer in apply mode to create the ACS scan config.
 
-Procedure (overwrite):
+Procedure (create-only / IMP-ACC-006):
+
+1. Re-run importer without `--overwrite-existing`.
+2. Verify that config is skipped and `problems[]` has category `conflict`.
+
+Procedure (overwrite / IMP-ACC-014):
 
 1. Re-run importer with `--overwrite-existing`.
-2. Verify that the modified config is updated back to the imported state.
+2. Verify that report shows `action=update`, not `skip`.
+
+Teardown: delete ACS scan config, ScanSettingBinding, and ScanSetting.
 
 ### A8 - Multi-cluster merge
 
@@ -158,10 +205,43 @@ Procedure (overwrite):
 - **IMP-ACC-017**: importer MUST auto-discover the ACS cluster ID from the admission-control
   ConfigMap's `cluster-id` key.
 
+Setup:
+
+1. Create CO resources (`e2e-disco-<run-id>`).
+
+Command:
+
+```bash
+"${IMPORTER_BIN}" \
+  --endpoint "${ROX_ENDPOINT}" \
+  --co-namespace "${CO_NAMESPACE}" \
+  --dry-run \
+  --report-json "/tmp/co-acs-import-disco.json"
+```
+
+Pass condition: report shows `discovered > 0` (importer resolved cluster ID
+without explicit flag).
+
+Teardown: delete ScanSettingBinding and ScanSetting.
+
 ### A7 - Failure paths
 
 - **IMP-ACC-007**: invalid token MUST fail-fast with exit code `1`.
-- **IMP-ACC-008**: missing referenced ScanSetting MUST fail only that binding (partial run exit code `2` when others succeed).
+  No CO resource setup needed — this tests preflight auth failure.
+- **IMP-ACC-008**: missing referenced ScanSetting MUST fail only that binding
+  (partial run exit code `2` when others succeed).
+
+Setup for IMP-ACC-008:
+
+1. Create a ScanSettingBinding `e2e-broken-<run-id>` referencing a ScanSetting
+   `does-not-exist-<run-id>` (do NOT create the ScanSetting).
+2. Create a valid ScanSettingBinding `e2e-valid-<run-id>` with its ScanSetting.
+
+Pass condition: report shows `e2e-broken-<run-id>` failed, `e2e-valid-<run-id>`
+processed, exit code `2`.
+
+Teardown: delete all created resources.
+
 - **IMP-ACC-009**: transient ACS failures MUST follow retry policy and record attempt counts.
 - **IMP-ACC-012**: all per-resource problems MUST be emitted in `problems[]` with remediation hint.
 
