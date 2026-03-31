@@ -95,10 +95,8 @@ jobs:
       - name: Set up kind cluster with StackRox and Compliance Operator
         id: setup
         run: |
-          # Run setup script, tee output to capture password while showing logs.
-          hack/ci-setup-kind-stackrox.sh | tee /tmp/setup-output.log
-          password=$(grep '^ROX_ADMIN_PASSWORD=' /tmp/setup-output.log | cut -d= -f2)
-          echo "rox-password=${password}" >> "$GITHUB_OUTPUT"
+          hack/ci-setup-kind-stackrox.sh
+          echo "rox-password=$(cat /tmp/rox-admin-password)" >> "$GITHUB_OUTPUT"
         env:
           CO_NAMESPACE: openshift-compliance
 
@@ -109,7 +107,7 @@ jobs:
           ROX_ADMIN_USER: admin
           ROX_ADMIN_PASSWORD: ${{ steps.setup.outputs.rox-password }}
           CO_NAMESPACE: openshift-compliance
-          IMPORTER_BIN: ./bin/compliance-operator-importer
+          IMPORTER_BIN: ${{ github.workspace }}/bin/compliance-operator-importer
 
       - name: Collect logs on failure
         if: failure()

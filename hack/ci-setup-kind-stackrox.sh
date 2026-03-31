@@ -90,7 +90,14 @@ echo "==> Generating init bundle..."
 kubectl -n stackrox exec deploy/central -- \
   roxctl --insecure-skip-tls-verify \
   central init-bundles generate ci-init-bundle --output - \
-  2>/dev/null > /tmp/init-bundle.yaml
+  > /tmp/init-bundle.yaml
+
+# Verify init bundle was generated.
+if [ ! -s /tmp/init-bundle.yaml ]; then
+  echo "ERROR: init bundle file is empty or missing"
+  exit 1
+fi
+echo "    Init bundle generated ($(wc -c < /tmp/init-bundle.yaml) bytes)"
 
 echo "==> Installing stackrox-secured-cluster-services..."
 helm install stackrox-secured-cluster-services stackrox/stackrox-secured-cluster-services \
@@ -200,5 +207,8 @@ echo "==> Kind cluster ready for e2e tests"
 echo "    Cluster: ${CLUSTER_NAME}"
 echo "    Endpoint: ${ROX_ENDPOINT}"
 echo "    Namespace: ${CO_NAMESPACE}"
-echo ""
-echo "ROX_ADMIN_PASSWORD=${ROX_ADMIN_PASSWORD}"
+
+# Write password to file for CI to pick up (avoids stdout masking).
+PASSWORD_FILE="${PASSWORD_FILE:-/tmp/rox-admin-password}"
+echo -n "${ROX_ADMIN_PASSWORD}" > "${PASSWORD_FILE}"
+echo "    Password written to: ${PASSWORD_FILE}"
