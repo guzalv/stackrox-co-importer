@@ -176,6 +176,7 @@ kind: Profile
 metadata:
   name: ocp4-cis
   namespace: ${CO_NAMESPACE}
+id: xccdf_org.ssgproject.content_profile_cis
 title: CIS OpenShift Benchmark
 description: Test profile for CI e2e
 rules: []
