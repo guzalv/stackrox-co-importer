@@ -509,17 +509,17 @@ func TestIMP_ACC_004_ApplyCreatesConfigs(t *testing.T) {
 		"--report-json", reportPath,
 	)
 
-	_, _, exitCode := runImporter(t, args...)
+	stdout, stderr, exitCode := runImporter(t, args...)
 
 	if exitCode != 0 && exitCode != 2 {
-		t.Fatalf("expected exit code 0 or 2, got %d", exitCode)
+		t.Fatalf("expected exit code 0 or 2, got %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
 	}
 
 	r := parseReport(t, reportPath)
 
 	// Expect at least one discovered binding (the one we created).
 	if r.Counts.Discovered == 0 {
-		t.Fatal("report shows 0 discovered bindings — expected at least one")
+		t.Fatalf("report shows 0 discovered bindings — expected at least one\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 
 	// Report should show action=create for our SSB.
@@ -531,7 +531,8 @@ func TestIMP_ACC_004_ApplyCreatesConfigs(t *testing.T) {
 		}
 	}
 	if !foundCreate {
-		t.Errorf("report does not show action=create for %q", ssbName)
+		reportJSON, _ := json.MarshalIndent(r, "", "  ")
+		t.Errorf("report does not show action=create for %q\nreport: %s\nstderr: %s", ssbName, reportJSON, stderr)
 	}
 
 	// Verify ACS config was actually created.
@@ -660,7 +661,8 @@ func TestIMP_ACC_006_SkipExistingWithoutOverwrite(t *testing.T) {
 
 	// Existing configs should be skipped.
 	if r.Counts.Skip == 0 && r.Counts.Discovered > 0 {
-		t.Error("expected at least one skip for existing configs, got 0")
+		reportJSON, _ := json.MarshalIndent(r, "", "  ")
+		t.Errorf("expected at least one skip for existing configs, got 0\nreport: %s", reportJSON)
 	}
 
 	// problems[] should contain conflict entries for skipped configs.
