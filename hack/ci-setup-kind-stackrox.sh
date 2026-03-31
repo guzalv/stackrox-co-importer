@@ -88,8 +88,10 @@ done
 
 echo "==> Generating init bundle..."
 kubectl -n stackrox exec deploy/central -- \
-  env HOME=/tmp \
+  env HOME=/tmp ROX_ADMIN_PASSWORD="${ROX_ADMIN_PASSWORD}" \
   roxctl --insecure-skip-tls-verify \
+  --password "${ROX_ADMIN_PASSWORD}" \
+  -e "https://localhost:8443" \
   central init-bundles generate ci-init-bundle --output - \
   > /tmp/init-bundle.yaml
 
