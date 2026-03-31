@@ -204,6 +204,31 @@ for i in $(seq 1 30); do
   sleep 5
 done
 
+# ── 7. Wait for ACS to sync compliance profiles from sensor ──────────────
+
+echo "==> Waiting for compliance profiles to appear in ACS..."
+if [ -n "${CLUSTER_ID}" ]; then
+  for i in $(seq 1 60); do
+    PROFILE_RESP=$(curl -ksS -u "admin:${ROX_ADMIN_PASSWORD}" \
+      "${ROX_ENDPOINT}/v2/compliance/profiles/cluster?cluster_id=${CLUSTER_ID}" 2>/dev/null || true)
+    PROFILE_COUNT=$(echo "${PROFILE_RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('profiles',[])))" 2>/dev/null || echo "0")
+    if [ "${PROFILE_COUNT}" -gt 0 ]; then
+      echo "    Found ${PROFILE_COUNT} profile(s) synced to ACS for cluster ${CLUSTER_ID}"
+      # List profile names for debugging.
+      echo "${PROFILE_RESP}" | python3 -c "import sys,json; [print('    -',p.get('name','?')) for p in json.load(sys.stdin).get('profiles',[])]" 2>/dev/null || true
+      break
+    fi
+    if [ "$i" -eq 60 ]; then
+      echo "WARNING: No compliance profiles synced to ACS after 5 minutes"
+      echo "    This may cause e2e tests that create scan configs to fail"
+      echo "    API response: ${PROFILE_RESP}"
+    fi
+    sleep 5
+  done
+else
+  echo "WARNING: Skipping profile sync check (no cluster ID available)"
+fi
+
 # ── Done ────────────────────────────────────────────────────────────────────
 
 echo ""
