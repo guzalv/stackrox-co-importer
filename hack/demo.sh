@@ -42,11 +42,12 @@ fi
 
 IMPORTER_FLAGS=(--endpoint "$ACS_ENDPOINT" --insecure-skip-verify)
 
-DEMO_PREFIX="demo-import"
-SSB_CIS="${DEMO_PREFIX}-cis-scan"
-SSB_MODERATE="${DEMO_PREFIX}-moderate-scan"
-SSB_PCI="${DEMO_PREFIX}-pci-dss-scan"
-SCAN_SETTING="${DEMO_PREFIX}-setting"
+# SSB names become the ACS scan config names (and the adopted ScanSetting names).
+# The shared ScanSetting has a distinct name so the two are never confused.
+SSB_CIS="demo-scan-cis"
+SSB_MODERATE="demo-scan-moderate"
+SSB_PCI="demo-scan-pci"
+SCAN_SETTING="demo-scansetting-weekly"   # original shared ScanSetting (not ACS-created)
 REPORT_JSON="/tmp/co-acs-importer-demo.json"
 
 PRIMARY_KUBECONFIG="${HOME}/.kube/config"
@@ -266,13 +267,13 @@ settingsRef:
 EOF
 }
 
-# Patch the schedule on all known demo ScanSettings on a given cluster.
-# Patches the shared ScanSetting plus any per-SSB ScanSettings that the
-# adoption workflow may have created (named after the SSBs themselves).
-# Silently skips names that don't exist yet.
+# Patch the schedule on demo ScanSettings to simulate drift.
+# After adoption, each SSB references a ScanSetting with the same name as the SSB.
+# We patch those directly. The shared ScanSetting covers SSBs not yet adopted.
+# Silently skips any name that doesn't exist on this cluster.
 patch_demo_schedules() {
     local kc_cmd="$1" new_schedule="$2"
-    for name in "$SCAN_SETTING" "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI"; do
+    for name in "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI" "$SCAN_SETTING"; do
         if $kc_cmd get scansetting "$name" -n "$CO_NS" &>/dev/null 2>&1; then
             $kc_cmd patch scansetting "$name" -n "$CO_NS" \
                 --type merge -p "{\"schedule\": \"${new_schedule}\"}" 2>/dev/null || true
@@ -306,13 +307,14 @@ cleanup_demo_resources() {
     cleanup_cluster "$KC1"
     if [[ $HAS_SECOND_CLUSTER -eq 1 && -n "$KC2" ]]; then cleanup_cluster "$KC2"; fi
 
-    # Delete demo scan configs from ACS.
+    # Delete demo scan configs from ACS (matched by exact SSB names).
     acs_api GET "/v2/compliance/scan/configurations?pagination.limit=1000" 2>/dev/null \
         | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
+names = {'${SSB_CIS}', '${SSB_MODERATE}', '${SSB_PCI}'}
 for c in data.get('configurations', []):
-    if c['scanName'].startswith('${DEMO_PREFIX}-'):
+    if c['scanName'] in names:
         print(c['id'])
 " 2>/dev/null | while read -r cfg_id; do
         acs_api DELETE "/v2/compliance/scan/configurations/$cfg_id" >/dev/null 2>&1 || true
