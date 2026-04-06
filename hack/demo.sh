@@ -7,6 +7,7 @@
 #   - ACS Central reachable from this machine
 #   - ROX_ADMIN_PASSWORD or ROX_API_TOKEN set
 #   - ROX_ENDPOINT set
+#   - python3 in PATH
 #   - The importer binary built: make build
 #
 # Usage:
@@ -24,6 +25,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMPORTER="${SCRIPT_DIR}/../bin/compliance-operator-importer"
 CO_NS="${CO_NAMESPACE:-openshift-compliance}"
+DEMO_CONTEXT="${DEMO_CONTEXT:-$(kubectl config current-context 2>/dev/null)}"
 
 # Resolve ACS endpoint.
 ACS_ENDPOINT="${ROX_ENDPOINT:?ROX_ENDPOINT must be set}"
@@ -41,14 +43,22 @@ else
     exit 1
 fi
 
-# Importer flags.
-IMPORTER_FLAGS=(--endpoint "$ACS_ENDPOINT" --insecure-skip-verify)
+# Importer flags — scoped to the demo context so we only process demo SSBs.
+IMPORTER_FLAGS=(
+    --endpoint "$ACS_ENDPOINT"
+    --insecure-skip-verify
+    --context "$DEMO_CONTEXT"
+)
 
 # Demo resource names — prefixed to avoid collisions with real workloads.
 DEMO_PREFIX="demo-import"
 SSB_CIS="${DEMO_PREFIX}-cis-scan"
 SSB_MODERATE="${DEMO_PREFIX}-moderate-scan"
 SSB_PCI="${DEMO_PREFIX}-pci-dss-scan"
+SCAN_SETTING="${DEMO_PREFIX}-setting"
+
+# JSON report path.
+REPORT_JSON="/tmp/co-acs-importer-demo.json"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -78,7 +88,7 @@ section() {
     echo ""
 }
 
-info() { echo -e "${DIM}$1${RESET}"; }
+info()    { echo -e "${DIM}$1${RESET}"; }
 narrate() { echo -e "${YELLOW}$1${RESET}"; }
 success() { echo -e "${GREEN}  ✓ $1${RESET}"; }
 
@@ -93,6 +103,7 @@ pause() {
     echo ""
 }
 
+# Print and run a command, showing its output.
 run_cmd() {
     echo -e "${BOLD}\$ $*${RESET}"
     "$@" 2>&1 || true
@@ -114,35 +125,30 @@ acs_api() {
 
 cleanup_demo_resources() {
     local quiet="${1:-}"
-    [[ -z "$quiet" ]] && info "Cleaning up demo resources..."
+    if [[ -z "$quiet" ]]; then info "Cleaning up demo resources..."; fi
 
     # Delete demo SSBs from the cluster.
     for ssb in "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI"; do
         kubectl delete scansettingbinding "$ssb" -n "$CO_NS" --ignore-not-found 2>/dev/null || true
     done
 
-    # Delete the demo ScanSetting and any ACS-adopted ScanSettings named after SSBs.
-    kubectl delete scansetting "${DEMO_PREFIX}-setting" -n "$CO_NS" --ignore-not-found 2>/dev/null || true
+    # Delete the demo ScanSettings (shared + any ACS-adopted ones named after SSBs).
+    kubectl delete scansetting "${SCAN_SETTING}" -n "$CO_NS" --ignore-not-found 2>/dev/null || true
     for ssb in "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI"; do
         kubectl delete scansetting "$ssb" -n "$CO_NS" --ignore-not-found 2>/dev/null || true
     done
 
-    # Delete demo scan configs from ACS.
+    # Delete demo scan configs from ACS (query by prefix).
     local configs
     configs=$(acs_api GET "/v2/compliance/scan/configurations?pagination.limit=1000" 2>/dev/null || true)
-    for ssb in "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI"; do
-        local config_id
-        config_id=$(echo "$configs" | python3 -c "
+    echo "$configs" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for c in data.get('configurations', []):
-    if c['scanName'] == '$ssb':
+    if c['scanName'].startswith('${DEMO_PREFIX}-'):
         print(c['id'])
-        break
-" 2>/dev/null || true)
-        if [[ -n "$config_id" ]]; then
-            acs_api DELETE "/v2/compliance/scan/configurations/$config_id" >/dev/null 2>&1 || true
-        fi
+" 2>/dev/null | while read -r cfg_id; do
+        acs_api DELETE "/v2/compliance/scan/configurations/$cfg_id" >/dev/null 2>&1 || true
     done
 
     if [[ -z "$quiet" ]]; then success "Done"; fi
@@ -162,7 +168,9 @@ preflight() {
         echo "ERROR: kubectl cannot reach the cluster" >&2
         exit 1
     fi
-    if ! acs_api GET "/v1/metadata" 2>/dev/null | python3 -c "import sys,json; json.load(sys.stdin)" &>/dev/null; then
+    local meta
+    meta=$(acs_api GET "/v1/metadata" 2>/dev/null) || true
+    if ! echo "$meta" | python3 -c "import sys,json; json.load(sys.stdin)" &>/dev/null; then
         echo "ERROR: cannot reach ACS at ${ACS_URL}" >&2
         exit 1
     fi
@@ -179,28 +187,32 @@ trap 'echo ""; cleanup_demo_resources' EXIT
 # ═════════════════════════════════════════════════════════════════════════════
 
 preflight
-# Silently remove leftovers from a previous run before starting.
-cleanup_demo_resources quiet
+cleanup_demo_resources quiet  # silently remove leftovers from a previous run
 
 clear
 banner "CO → ACS Scheduled Scan Importer — Interactive Demo"
 
-narrate "This demo walks through the importer tool that reads Compliance Operator"
-narrate "ScanSettingBinding resources from Kubernetes and creates equivalent scan"
-narrate "configurations in Red Hat Advanced Cluster Security (ACS)."
+narrate "Problem: your team uses Compliance Operator to schedule automated"
+narrate "scans on the cluster. ACS Central has no knowledge of these schedules."
+narrate "You'd need to manually recreate each scan in the ACS UI."
 echo ""
-narrate "We will:"
-narrate "  1. Create demo ScanSettingBindings on the cluster"
-narrate "  2. Run the importer in dry-run mode"
-narrate "  3. Run the importer for real (happy path)"
-narrate "  4. Run again to see skip behaviour (idempotency)"
-narrate "  5. Simulate schedule drift on the Kubernetes side"
-narrate "  6. Run without --overwrite-existing (drift preserved)"
-narrate "  7. Run with --overwrite-existing (drift resolved)"
+narrate "Solution: this tool reads CO ScanSettingBindings and creates matching"
+narrate "ACS compliance scan configurations automatically — with idempotency,"
+narrate "dry-run preview, and drift detection."
 echo ""
-info "Cluster:  $(kubectl config current-context)"
-info "ACS:      ${ACS_URL}"
-info "CO NS:    ${CO_NS}"
+narrate "What we'll cover:"
+narrate "  1. Create demo CO resources (ScanSetting + 3 SSBs)"
+narrate "  2. Dry-run preview — what would be created?"
+narrate "  3. Apply — create the ACS scan configs"
+narrate "  4. Idempotency — second run is a no-op"
+narrate "  5. Drift — someone edits the CO schedule directly"
+narrate "  6. Skip mode — importer detects but does not overwrite (safe default)"
+narrate "  7. Overwrite mode — importer re-syncs ACS to the cluster schedule"
+echo ""
+info "Cluster context:  ${DEMO_CONTEXT}"
+info "ACS:              ${ACS_URL}"
+info "CO namespace:     ${CO_NS}"
+info "Report output:    ${REPORT_JSON}"
 
 pause
 
@@ -208,273 +220,300 @@ pause
 #  STEP 1: Create demo ScanSetting and ScanSettingBindings
 # ─────────────────────────────────────────────────────────────────────────────
 
-banner "Step 1: Create Demo Resources"
+banner "Step 1: Create Demo CO Resources"
 
-narrate "First, we create a ScanSetting with a daily schedule (02:00 UTC),"
-narrate "then three ScanSettingBindings that reference it — each binding"
-narrate "targets a different compliance profile."
+narrate "We'll create a ScanSetting (daily at 02:00) and three SSBs, each"
+narrate "targeting a different compliance profile. In practice these already"
+narrate "exist on the cluster — we're creating them here for a clean demo."
 
 pause
 
-section "Creating ScanSetting: ${DEMO_PREFIX}-setting"
+section "Applying ScanSetting + 3 ScanSettingBindings"
 info "Schedule: 0 2 * * * (daily at 02:00)"
+info "Profiles: ocp4-cis | ocp4-moderate | ocp4-pci-dss"
+echo ""
 
-run_cmd kubectl apply -f - << EOF
+# All four resources in a single kubectl apply.
+kubectl apply -f - << EOF
 apiVersion: compliance.openshift.io/v1alpha1
 kind: ScanSetting
 metadata:
-  name: ${DEMO_PREFIX}-setting
+  name: ${SCAN_SETTING}
   namespace: ${CO_NS}
+  labels:
+    app.kubernetes.io/created-by: co-importer-demo
 schedule: "0 2 * * *"
-roles:
-  - worker
-  - master
+roles: [worker, master]
 rawResultStorage:
   rotation: 3
   size: 1Gi
-EOF
-
-section "Creating ScanSettingBinding: ${SSB_CIS}"
-info "Profile: ocp4-cis"
-
-run_cmd kubectl apply -f - << EOF
+---
 apiVersion: compliance.openshift.io/v1alpha1
 kind: ScanSettingBinding
 metadata:
   name: ${SSB_CIS}
   namespace: ${CO_NS}
+  labels:
+    app.kubernetes.io/created-by: co-importer-demo
 profiles:
   - name: ocp4-cis
     kind: Profile
     apiGroup: compliance.openshift.io/v1alpha1
 settingsRef:
-  name: ${DEMO_PREFIX}-setting
+  name: ${SCAN_SETTING}
   kind: ScanSetting
   apiGroup: compliance.openshift.io/v1alpha1
-EOF
-
-section "Creating ScanSettingBinding: ${SSB_MODERATE}"
-info "Profile: ocp4-moderate"
-
-run_cmd kubectl apply -f - << EOF
+---
 apiVersion: compliance.openshift.io/v1alpha1
 kind: ScanSettingBinding
 metadata:
   name: ${SSB_MODERATE}
   namespace: ${CO_NS}
+  labels:
+    app.kubernetes.io/created-by: co-importer-demo
 profiles:
   - name: ocp4-moderate
     kind: Profile
     apiGroup: compliance.openshift.io/v1alpha1
 settingsRef:
-  name: ${DEMO_PREFIX}-setting
+  name: ${SCAN_SETTING}
   kind: ScanSetting
   apiGroup: compliance.openshift.io/v1alpha1
-EOF
-
-section "Creating ScanSettingBinding: ${SSB_PCI}"
-info "Profile: ocp4-pci-dss"
-
-run_cmd kubectl apply -f - << EOF
+---
 apiVersion: compliance.openshift.io/v1alpha1
 kind: ScanSettingBinding
 metadata:
   name: ${SSB_PCI}
   namespace: ${CO_NS}
+  labels:
+    app.kubernetes.io/created-by: co-importer-demo
 profiles:
   - name: ocp4-pci-dss
     kind: Profile
     apiGroup: compliance.openshift.io/v1alpha1
 settingsRef:
-  name: ${DEMO_PREFIX}-setting
+  name: ${SCAN_SETTING}
   kind: ScanSetting
   apiGroup: compliance.openshift.io/v1alpha1
 EOF
 
-section "Verify: resources on the cluster"
-run_cmd kubectl get scansettingbindings.compliance.openshift.io -n "$CO_NS" \
-    -o custom-columns='NAME:.metadata.name,SETTING:.settingsRef.name,PROFILES:.profiles[*].name'
+echo ""
+section "Verify: demo resources on the cluster"
+kubectl get scansettingbindings.compliance.openshift.io,scansettings.compliance.openshift.io \
+    -n "$CO_NS" -l "app.kubernetes.io/created-by=co-importer-demo" \
+    -o custom-columns='KIND:.kind,NAME:.metadata.name,SCHEDULE:.schedule,PROFILES:.profiles[*].name' \
+    --no-headers
 
-narrate "Three ScanSettingBindings created, each referencing the demo ScanSetting."
-narrate "The importer will read these and create matching ACS scan configurations."
+narrate ""
+narrate "Three SSBs ready, all referencing the same ScanSetting (schedule: 0 2 * * *)."
 
 pause
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  STEP 2: Dry run
+#  STEP 2: Dry run (with JSON report)
 # ─────────────────────────────────────────────────────────────────────────────
 
 banner "Step 2: Dry Run"
 
-narrate "Before making any changes, let's preview what the importer would do."
-narrate "The --dry-run flag shows planned actions without touching ACS."
+narrate "Before touching ACS, preview the plan with --dry-run."
+narrate "--report-json writes a machine-readable report — useful for CI pipelines"
+narrate "that need to gate on what the importer would do."
+narrate ""
+narrate "The importer is scoped to --context ${DEMO_CONTEXT} so it only"
+narrate "processes SSBs from this cluster, not others it might have access to."
 
 pause
 
-run_cmd "$IMPORTER" "${IMPORTER_FLAGS[@]}" --dry-run
+run_cmd "$IMPORTER" "${IMPORTER_FLAGS[@]}" --dry-run --report-json "$REPORT_JSON"
 
-narrate "The importer discovered our 3 demo SSBs, mapped them to ACS scan"
-narrate "configurations, and reported that it would create all three."
-narrate "No changes were made to ACS."
+section "Report summary (JSON)"
+python3 -c "
+import json
+with open('${REPORT_JSON}') as f:
+    r = json.load(f)
+counts = r.get('counts', {})
+print(f'  discovered={counts.get(\"discovered\",\"?\")}  create={counts.get(\"create\",\"?\")}  skip={counts.get(\"skip\",\"?\")}  failed={counts.get(\"failed\",\"?\")}')
+for item in r.get('items', []):
+    name = item.get('source', {}).get('bindingName','?')
+    action = item.get('action','?')
+    cfg_id = item.get('acsScanConfigId','')
+    note = f'  id={cfg_id}' if cfg_id else ''
+    print(f'  {name}: {action}{note}')
+" 2>/dev/null || info "(check ${REPORT_JSON} directly)"
+
+narrate ""
+narrate "Three creates planned for the demo SSBs; 'sedge' would be skipped"
+narrate "(it already exists in ACS). No changes made yet."
 
 pause
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  STEP 3: Happy path — real import
+#  STEP 3: Apply — real import
 # ─────────────────────────────────────────────────────────────────────────────
 
-banner "Step 3: Import (Happy Path)"
+banner "Step 3: Apply (Happy Path)"
 
-narrate "Now let's run the importer for real. It will create three scan"
-narrate "configurations in ACS, one for each ScanSettingBinding."
+narrate "Now for real. The importer creates one ACS scan config per SSB,"
+narrate "mapping the CO cron schedule into the ACS schedule format."
 
 pause
 
-run_cmd "$IMPORTER" "${IMPORTER_FLAGS[@]}"
+run_cmd "$IMPORTER" "${IMPORTER_FLAGS[@]}" --report-json "$REPORT_JSON"
 
-section "Verify: scan configurations in ACS"
-info "Querying ACS API for our demo scan configs..."
-echo ""
-
-all_configs=$(acs_api GET "/v2/compliance/scan/configurations?pagination.limit=1000" 2>/dev/null)
-for ssb in "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI"; do
-    found=$(echo "$all_configs" | python3 -c "
+section "Verify: scan configs now exist in ACS"
+acs_api GET "/v2/compliance/scan/configurations?pagination.limit=1000" 2>/dev/null | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
+targets = {'${SSB_CIS}', '${SSB_MODERATE}', '${SSB_PCI}'}
 for c in data.get('configurations', []):
-    if c['scanName'] == '$ssb':
+    if c['scanName'] in targets:
         sched = c.get('scanConfig', {}).get('scanSchedule', {})
         profiles = c.get('scanConfig', {}).get('profiles', [])
-        print(f\"  Name:     {c['scanName']}\")
-        print(f\"  ID:       {c['id']}\")
-        print(f\"  Schedule: {sched.get('intervalType','?')} at {sched.get('hour','?')}:{sched.get('minute',0):02d}\")
-        print(f\"  Profiles: {', '.join(profiles)}\")
-        break
-" 2>/dev/null || true)
-    if [[ -n "$found" ]]; then
-        success "Found in ACS:"
-        echo "$found"
-        echo ""
-    fi
-done
+        print(f\"  {c['scanName']}\")
+        print(f\"    schedule: {sched.get('intervalType','?')} {sched.get('hour','?')}:{sched.get('minute',0):02d}\")
+        print(f\"    profiles: {', '.join(profiles)}\")
+        print(f\"    id:       {c['id']}\")
+" 2>/dev/null
 
-narrate "All three scan configurations were created successfully in ACS."
+narrate ""
+narrate "All three scan configs created. ACS now knows about the CO schedules."
 
 pause
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  STEP 4: Idempotency — run again, expect skips
+#  STEP 4: Idempotency
 # ─────────────────────────────────────────────────────────────────────────────
 
 banner "Step 4: Idempotency"
 
-narrate "What happens if we run the importer again? Since the scan configurations"
-narrate "already exist in ACS, the importer should skip them gracefully."
+narrate "Run the importer again with no changes on the cluster."
+narrate "It should detect all three as already existing and skip them."
 
 pause
 
 run_cmd "$IMPORTER" "${IMPORTER_FLAGS[@]}"
 
-narrate "All three were skipped — the importer is idempotent by default."
-narrate "It detects existing scan configs by name and does not create duplicates."
+narrate "All demo SSBs skipped (plus any others in the namespace)."
+narrate "The importer matches by scanName and never creates duplicates."
+narrate "Safe to run on a cron schedule."
 
 pause
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  STEP 5: Simulate schedule drift on the Kubernetes side
+#  STEP 5: Simulate schedule drift
 # ─────────────────────────────────────────────────────────────────────────────
 
 banner "Step 5: Simulate Schedule Drift"
 
-narrate "The SSBs still reference the shared ScanSetting '${DEMO_PREFIX}-setting'."
-narrate "Let's simulate a real-world scenario: someone edits the shared ScanSetting"
-narrate "directly on the cluster (e.g. via kubectl).  ACS does NOT detect this"
-narrate "change — the UI still shows the original schedule, but scans actually"
-narrate "run on the new schedule.  A silent drift."
+narrate "Real-world scenario: an operator edits the CO ScanSetting directly"
+narrate "on the cluster (kubectl patch, GitOps apply, etc.)."
+narrate "ACS has no webhook or watch on CO resources — it stays at the old"
+narrate "schedule. The cluster runs at the new time. Silent drift."
 
 pause
 
-section "Editing shared ScanSetting directly on the cluster"
-info "ScanSetting '${DEMO_PREFIX}-setting' has schedule 0 2 * * *"
-info "Patching it to 0 5 * * * (daily at 05:00)"
-
-run_cmd kubectl patch scansetting "${DEMO_PREFIX}-setting" -n "$CO_NS" \
-    --type merge -p '{"schedule": "0 5 * * *"}'
-
-section "Verify: cluster vs ACS"
+section "Who does each SSB reference right now?"
+for ssb in "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI"; do
+    setting=$(kubectl get scansettingbinding "$ssb" -n "$CO_NS" \
+        -o jsonpath='{.settingsRef.name}' 2>/dev/null || echo "?")
+    schedule=$(kubectl get scansetting "$setting" -n "$CO_NS" \
+        -o jsonpath='{.schedule}' 2>/dev/null || echo "?")
+    echo -e "  ${ssb} → ${setting}  (${schedule})"
+done
 echo ""
-echo -e "${BOLD}On the cluster (actual behaviour):${RESET}"
-kubectl get scansetting "${DEMO_PREFIX}-setting" -n "$CO_NS" \
-    -o custom-columns='SCANSETTING:.metadata.name,SCHEDULE:.schedule' --no-headers
+
+# Patch all ScanSettings the demo SSBs currently reference.
+section "Patching: 0 2 * * * → 0 5 * * * on every referenced ScanSetting"
+patched=()
+for ssb in "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI"; do
+    setting=$(kubectl get scansettingbinding "$ssb" -n "$CO_NS" \
+        -o jsonpath='{.settingsRef.name}' 2>/dev/null || true)
+    if [[ -n "$setting" ]] && [[ ! " ${patched[*]} " =~ " ${setting} " ]]; then
+        kubectl patch scansetting "$setting" -n "$CO_NS" \
+            --type merge -p '{"schedule": "0 5 * * *"}' 2>/dev/null
+        echo -e "  Patched ScanSetting ${BOLD}${setting}${RESET}: schedule → 0 5 * * *"
+        patched+=("$setting")
+    fi
+done
+
+section "Cluster vs ACS: the gap"
+echo -e "${BOLD}On the cluster (what actually runs):${RESET}"
+for ssb in "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI"; do
+    setting=$(kubectl get scansettingbinding "$ssb" -n "$CO_NS" \
+        -o jsonpath='{.settingsRef.name}' 2>/dev/null || echo "?")
+    schedule=$(kubectl get scansetting "$setting" -n "$CO_NS" \
+        -o jsonpath='{.schedule}' 2>/dev/null || echo "?")
+    echo -e "  ${ssb}: ${schedule}"
+done
 echo ""
-echo -e "${BOLD}In ACS (what the UI shows for ${SSB_CIS}):${RESET}"
+echo -e "${BOLD}In ACS (what Central thinks):${RESET}"
 acs_api GET "/v2/compliance/scan/configurations?pagination.limit=1000" 2>/dev/null | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
+targets = {'${SSB_CIS}', '${SSB_MODERATE}', '${SSB_PCI}'}
 for c in data.get('configurations', []):
-    if c['scanName'] == '${SSB_CIS}':
+    if c['scanName'] in targets:
         sched = c.get('scanConfig', {}).get('scanSchedule', {})
-        print(f\"  {c['scanName']}: {sched.get('intervalType','?')} at {sched.get('hour','?')}:{sched.get('minute',0):02d}\")
-        break
+        print(f\"  {c['scanName']}: {sched.get('intervalType','?')} {sched.get('hour','?')}:{sched.get('minute',0):02d}\")
 " 2>/dev/null
 echo ""
-
-narrate "The cluster now scans at 05:00, but ACS still thinks it's 02:00."
-narrate "This silent drift is exactly what the importer can detect and fix."
+narrate "Cluster: 05:00. ACS: 02:00. Drift is live."
 
 pause
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  STEP 6: Run without --overwrite-existing (skip conflict)
+#  STEP 6: Run without --overwrite-existing (drift preserved)
 # ─────────────────────────────────────────────────────────────────────────────
 
-banner "Step 6: Default Behaviour (Skip Conflicts)"
+banner "Step 6: Default Mode — Drift Preserved"
 
-narrate "Running the importer without --overwrite-existing. The scan config"
-narrate "already exists in ACS, so the importer will skip it — even though"
-narrate "the schedule has drifted on the cluster."
+narrate "Without --overwrite-existing the importer skips all three."
+narrate "It sees the names already exist in ACS and leaves them alone."
+narrate "This is the safe default: never silently modify production configs."
 
 pause
 
 run_cmd "$IMPORTER" "${IMPORTER_FLAGS[@]}"
 
-narrate "All three were skipped — the importer found existing configs by name"
-narrate "and left them untouched. The drifted CIS config was NOT updated."
-narrate "This is the safe default: no surprises, no overwrites."
+narrate "Demo SSBs skipped — drift untouched. No surprises."
 
 pause
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  STEP 7: Run with --overwrite-existing (resolve drift)
+#  STEP 7: Run with --overwrite-existing (drift resolved)
 # ─────────────────────────────────────────────────────────────────────────────
 
-banner "Step 7: Overwrite Mode (Resolve Drift)"
+banner "Step 7: Overwrite Mode — Drift Resolved"
 
-narrate "Now let's run with --overwrite-existing. This tells the importer to"
-narrate "update existing ACS scan configs to match what's on the cluster."
-narrate "The CIS config in ACS will be updated from 02:00 → 05:00."
+narrate "--overwrite-existing: re-read all CO schedules and PUT to ACS."
+narrate "This is the reconcile path: run it whenever CO resources change."
 
 pause
 
 run_cmd "$IMPORTER" "${IMPORTER_FLAGS[@]}" --overwrite-existing
 
-section "Verify: ACS now matches the cluster"
+section "Verify: ACS schedule matches the cluster"
+echo -e "${BOLD}Cluster (source of truth):${RESET}"
+for ssb in "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI"; do
+    setting=$(kubectl get scansettingbinding "$ssb" -n "$CO_NS" \
+        -o jsonpath='{.settingsRef.name}' 2>/dev/null || echo "?")
+    schedule=$(kubectl get scansetting "$setting" -n "$CO_NS" \
+        -o jsonpath='{.schedule}' 2>/dev/null || echo "?")
+    echo -e "  ${ssb}: ${schedule}"
+done
+echo ""
+echo -e "${BOLD}ACS (after overwrite):${RESET}"
 acs_api GET "/v2/compliance/scan/configurations?pagination.limit=1000" 2>/dev/null | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-names = {'${SSB_CIS}', '${SSB_MODERATE}', '${SSB_PCI}'}
+targets = {'${SSB_CIS}', '${SSB_MODERATE}', '${SSB_PCI}'}
 for c in data.get('configurations', []):
-    if c['scanName'] in names:
+    if c['scanName'] in targets:
         sched = c.get('scanConfig', {}).get('scanSchedule', {})
-        print(f\"  {c['scanName']}: {sched.get('intervalType','?')} at {sched.get('hour','?')}:{sched.get('minute',0):02d}\")
+        print(f\"  {c['scanName']}: {sched.get('intervalType','?')} {sched.get('hour','?')}:{sched.get('minute',0):02d}\")
 " 2>/dev/null
 echo ""
-
-narrate "The scan configs now reflect what's on the cluster:"
-narrate "  - SSBs still referencing demo-import-setting (patched to 05:00) are updated."
-narrate "  - Any SSB that was adopted (settingsRef rewritten) reflects its own ScanSetting."
-narrate "The --overwrite-existing flag ensures ACS stays in sync with the"
-narrate "Compliance Operator source of truth."
+narrate "Both show 05:00. In sync."
 
 pause
 
@@ -484,15 +523,16 @@ pause
 
 banner "Demo Complete"
 
-narrate "Summary of what we demonstrated:"
+echo -e "  ${GREEN}1.${RESET} Created CO resources — ScanSetting + 3 SSBs"
+echo -e "  ${GREEN}2.${RESET} Dry-run with JSON report — preview before committing"
+echo -e "  ${GREEN}3.${RESET} Apply — 3 ACS scan configs created from CO schedules"
+echo -e "  ${GREEN}4.${RESET} Idempotency — safe to re-run, no duplicates"
+echo -e "  ${GREEN}5.${RESET} Drift — CO schedule changed, ACS unaware"
+echo -e "  ${GREEN}6.${RESET} Default skip — existing configs preserved"
+echo -e "  ${GREEN}7.${RESET} Overwrite — ACS re-synced to cluster schedule"
 echo ""
-echo -e "  ${GREEN}1.${RESET} Created CO resources (ScanSetting + 3 ScanSettingBindings)"
-echo -e "  ${GREEN}2.${RESET} Dry-run mode: preview without side effects"
-echo -e "  ${GREEN}3.${RESET} Happy path: imported all SSBs into ACS scan configs + adoption"
-echo -e "  ${GREEN}4.${RESET} Idempotency: re-run skips existing configs safely"
-echo -e "  ${GREEN}5.${RESET} Schedule drift: changed ScanSetting schedule on the cluster"
-echo -e "  ${GREEN}6.${RESET} Default skip: drift preserved without --overwrite-existing"
-echo -e "  ${GREEN}7.${RESET} Overwrite mode: drift resolved, ACS re-synced to cluster"
+echo -e "  ${DIM}For multi-cluster: pass multiple --context flags.${RESET}"
+echo -e "  ${DIM}Report: ${REPORT_JSON}${RESET}"
 echo ""
 
 # EXIT trap handles cleanup automatically.

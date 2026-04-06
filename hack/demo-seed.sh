@@ -189,8 +189,27 @@ EOF
     fi
     info "Using ACS cluster ID: ${cluster_id}"
 
+    # Helper to POST a scan config and check for errors.
+    create_scan_config() {
+        local name="$1" payload="$2" label="$3"
+        local resp
+        resp=$(acs_api POST "/v2/compliance/scan/configurations" -d "$payload" 2>/dev/null)
+        local err
+        err=$(echo "$resp" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+msg = d.get('message') or d.get('error','')
+if msg: print(msg)
+" 2>/dev/null || true)
+        if [[ -n "$err" ]]; then
+            fail "${name}: ${err}"
+        else
+            ok "${name}  ${label}"
+        fi
+    }
+
     # Scan 1: STIG weekly (no conflict with any SSB).
-    acs_api POST "/v2/compliance/scan/configurations" -d "{
+    create_scan_config "${ACS_SCAN_1}" "{
         \"scanName\": \"${ACS_SCAN_1}\",
         \"scanConfig\": {
             \"oneTimeScan\": false,
@@ -203,11 +222,10 @@ EOF
             \"description\": \"Demo seed ${id}: STIG weekly scan (no conflict)\"
         },
         \"clusters\": [\"${cluster_id}\"]
-    }" >/dev/null 2>&1
-    ok "${ACS_SCAN_1}  (ocp4-stig, weekly Mon 04:00)"
+    }" "(ocp4-stig, weekly Mon 04:00)"
 
-    # Scan 2: CIS audit — same name as SSB_1 → deliberate conflict.
-    acs_api POST "/v2/compliance/scan/configurations" -d "{
+    # Scan 2: CIS audit — same name as SSB_1 → deliberate skip/overwrite target.
+    create_scan_config "${ACS_SCAN_2}" "{
         \"scanName\": \"${ACS_SCAN_2}\",
         \"scanConfig\": {
             \"oneTimeScan\": false,
@@ -217,11 +235,10 @@ EOF
                 \"hour\": 6, \"minute\": 30,
                 \"daysOfWeek\": { \"days\": [5] }
             },
-            \"description\": \"Demo seed ${id}: CIS audit — pre-existing, will conflict with SSB\"
+            \"description\": \"Demo seed ${id}: CIS audit — pre-existing, same name as SSB\"
         },
         \"clusters\": [\"${cluster_id}\"]
-    }" >/dev/null 2>&1
-    ok "${ACS_SCAN_2}  (ocp4-cis, weekly Fri 06:30)  ← conflicts with SSB"
+    }" "(ocp4-cis, weekly Fri 06:30)  ← same name as ${SSB_1}"
 
     # ── Save state ───────────────────────────────────────────────────────
     echo "$id" > "$STATE_FILE"
@@ -229,11 +246,13 @@ EOF
     hdr "Summary"
     echo -e "  ${BOLD}Seed ID:${RESET}    ${CYAN}${id}${RESET}"
     echo -e "  ${BOLD}K8s SSBs:${RESET}   ${SSB_1}, ${SSB_2}, ${SSB_3}"
-    echo -e "  ${BOLD}ACS scans:${RESET}  ${ACS_SCAN_1}, ${ACS_SCAN_2}"
-    echo -e "  ${BOLD}Conflict:${RESET}   ${RED}${SSB_1}${RESET} (SSB) vs ${RED}${ACS_SCAN_2}${RESET} (ACS)"
+    echo -e "  ${BOLD}ACS scans:${RESET}  ${ACS_SCAN_1} (no matching SSB), ${ACS_SCAN_2} (matches SSB name)"
     echo ""
-    echo -e "  ${DIM}Run the importer to see conflict handling:${RESET}"
+    echo -e "  ${DIM}Default run — ${ACS_SCAN_2} skipped (name already in ACS):${RESET}"
     echo -e "  ${DIM}  ./bin/compliance-operator-importer --endpoint \$ROX_ENDPOINT --insecure-skip-verify${RESET}"
+    echo -e "  ${DIM}  Exit 0 = all ok, exit 2 = partial (some skipped/failed)${RESET}"
+    echo ""
+    echo -e "  ${DIM}Overwrite run — ${ACS_SCAN_2} updated to match CO schedule:${RESET}"
     echo -e "  ${DIM}  ./bin/compliance-operator-importer --endpoint \$ROX_ENDPOINT --insecure-skip-verify --overwrite-existing${RESET}"
     echo ""
     echo -e "  ${DIM}Tear down:  $0 down${RESET}"
