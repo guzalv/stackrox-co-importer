@@ -266,24 +266,17 @@ settingsRef:
 EOF
 }
 
-# Patch all ScanSettings currently referenced by demo SSBs on a given cluster.
-# Uses dynamic lookup so it works even after the adoption workflow has changed
-# SSB settingsRef fields away from the shared SCAN_SETTING.
-patch_all_demo_schedules() {
+# Patch the schedule on all known demo ScanSettings on a given cluster.
+# Patches the shared ScanSetting plus any per-SSB ScanSettings that the
+# adoption workflow may have created (named after the SSBs themselves).
+# Silently skips names that don't exist yet.
+patch_demo_schedules() {
     local kc_cmd="$1" new_schedule="$2"
-    local patched=()
-    for ssb in "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI"; do
-        local setting
-        setting=$($kc_cmd get scansettingbinding "$ssb" -n "$CO_NS" \
-            -o jsonpath='{.settingsRef.name}' 2>/dev/null || echo "")
-        if [[ -z "$setting" ]]; then continue; fi
-        # Skip if already patched (multiple SSBs can share a ScanSetting).
-        if [[ " ${patched[*]:-} " =~ " ${setting} " ]]; then continue; fi
-        if $kc_cmd get scansetting "$setting" -n "$CO_NS" &>/dev/null 2>&1; then
-            $kc_cmd patch scansetting "$setting" -n "$CO_NS" \
+    for name in "$SCAN_SETTING" "$SSB_CIS" "$SSB_MODERATE" "$SSB_PCI"; do
+        if $kc_cmd get scansetting "$name" -n "$CO_NS" &>/dev/null 2>&1; then
+            $kc_cmd patch scansetting "$name" -n "$CO_NS" \
                 --type merge -p "{\"schedule\": \"${new_schedule}\"}" 2>/dev/null || true
-            patched+=("$setting")
-            echo -e "  patched ScanSetting ${BOLD}${setting}${RESET} → ${new_schedule}"
+            echo -e "  patched ScanSetting ${BOLD}${name}${RESET} → ${new_schedule}"
         fi
     done
 }
@@ -545,7 +538,7 @@ if [[ $HAS_SECOND_CLUSTER -eq 1 ]]; then
     pause
 
     section "patching cluster-1 only: 02:00 → 06:00"
-    patch_all_demo_schedules "$KC1" "0 6 * * *"
+    patch_demo_schedules "$KC1" "0 6 * * *"
     echo ""
     echo -e "  cluster-1: ${BOLD}0 6 * * *${RESET} (06:00)"
     echo -e "  cluster-2: ${BOLD}0 2 * * *${RESET} (02:00)  ← unchanged"
@@ -559,7 +552,7 @@ if [[ $HAS_SECOND_CLUSTER -eq 1 ]]; then
     pause
 
     section "restoring cluster-1 to 02:00"
-    patch_all_demo_schedules "$KC1" "0 2 * * *"
+    patch_demo_schedules "$KC1" "0 2 * * *"
     narrate "Both clusters back to 02:00 — consistent again."
 
     pause
@@ -590,9 +583,9 @@ section "before"
 show_schedule_gap
 
 section "patching all clusters: 02:00 → 05:00"
-patch_all_demo_schedules "$KC1" "0 5 * * *"
+patch_demo_schedules "$KC1" "0 5 * * *"
 if [[ $HAS_SECOND_CLUSTER -eq 1 && -n "$KC2" ]]; then
-    patch_all_demo_schedules "$KC2" "0 5 * * *"
+    patch_demo_schedules "$KC2" "0 5 * * *"
 fi
 
 section "after — the gap"
