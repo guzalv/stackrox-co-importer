@@ -25,8 +25,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMPORTER="${SCRIPT_DIR}/../bin/compliance-operator-importer"
 CO_NS="${CO_NAMESPACE:-openshift-compliance}"
-DEMO_CONTEXT="${DEMO_CONTEXT:-$(kubectl config current-context 2>/dev/null)}"
-
 # Resolve ACS endpoint.
 ACS_ENDPOINT="${ROX_ENDPOINT:?ROX_ENDPOINT must be set}"
 ACS_URL="${ACS_ENDPOINT#http://}"
@@ -43,11 +41,10 @@ else
     exit 1
 fi
 
-# Importer flags — scoped to the demo context so we only process demo SSBs.
+# Importer flags.
 IMPORTER_FLAGS=(
     --endpoint "$ACS_ENDPOINT"
     --insecure-skip-verify
-    --context "$DEMO_CONTEXT"
 )
 
 # Demo resource names — prefixed to avoid collisions with real workloads.
@@ -209,7 +206,7 @@ narrate "  5. Drift — someone edits the CO schedule directly"
 narrate "  6. Skip mode — importer detects but does not overwrite (safe default)"
 narrate "  7. Overwrite mode — importer re-syncs ACS to the cluster schedule"
 echo ""
-info "Cluster context:  ${DEMO_CONTEXT}"
+info "Cluster context:  $(kubectl config current-context 2>/dev/null)"
 info "ACS:              ${ACS_URL}"
 info "CO namespace:     ${CO_NS}"
 info "Report output:    ${REPORT_JSON}"
@@ -319,8 +316,9 @@ narrate "Before touching ACS, preview the plan with --dry-run."
 narrate "--report-json writes a machine-readable report — useful for CI pipelines"
 narrate "that need to gate on what the importer would do."
 narrate ""
-narrate "The importer is scoped to --context ${DEMO_CONTEXT} so it only"
-narrate "processes SSBs from this cluster, not others it might have access to."
+narrate "The importer processes all SSBs in the namespace. Any pre-existing"
+narrate "SSBs (not created by this demo) will appear in the output too — that"
+narrate "is expected. The demo cleanup only removes resources it created."
 
 pause
 
