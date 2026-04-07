@@ -120,11 +120,36 @@ func importerBin(t *testing.T) string {
 
 // runImporter executes the importer binary with the given arguments and returns
 // stdout, stderr, and the exit code.
+//
+// Auth env vars are normalized: both ROX_API_TOKEN and ROX_ADMIN_PASSWORD are
+// stripped from the inherited environment, then exactly one is re-added (token
+// takes precedence). This prevents the IMP-CLI-025 "ambiguous auth" error when
+// both are set in the shell, without requiring callers to manage env state.
 func runImporter(t *testing.T, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	bin := importerBin(t)
 
 	cmd := exec.Command(bin, args...)
+
+	// Build a clean environment: pass everything except auth vars, then add one.
+	env := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "ROX_API_TOKEN=") &&
+			!strings.HasPrefix(e, "ROX_ADMIN_PASSWORD=") &&
+			!strings.HasPrefix(e, "ROX_ADMIN_USER=") {
+			env = append(env, e)
+		}
+	}
+	if token := os.Getenv("ROX_API_TOKEN"); token != "" {
+		env = append(env, "ROX_API_TOKEN="+token)
+	} else if password := os.Getenv("ROX_ADMIN_PASSWORD"); password != "" {
+		env = append(env, "ROX_ADMIN_PASSWORD="+password)
+		if user := os.Getenv("ROX_ADMIN_USER"); user != "" {
+			env = append(env, "ROX_ADMIN_USER="+user)
+		}
+	}
+	cmd.Env = env
+
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf

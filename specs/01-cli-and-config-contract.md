@@ -15,7 +15,7 @@ Define the importer interface so it can be implemented and tested predictably.
   (no explicit `--auth-mode` flag, no env-var-name indirection):
   - token mode: when `ROX_API_TOKEN` is set,
   - basic mode: when `ROX_ADMIN_PASSWORD` is set,
-  - if both are set: error ("ambiguous auth"),
+  - if both are set: token mode is used; a warning is emitted to stderr,
   - if neither is set: error with help text listing both options.
 - **IMP-CLI-003**: importer MUST load each kubeconfig file independently (no merging):
   - file discovery follows standard kubectl rules: `KUBECONFIG` env var (colon-separated
@@ -48,8 +48,9 @@ Define the importer interface so it can be implemented and tested predictably.
 - **IMP-CLI-024**: for basic mode:
   - username is read from `--username` flag or `ROX_ADMIN_USER` env var (default `admin`).
   - password is read from `ROX_ADMIN_PASSWORD` env var (no flag).
-- **IMP-CLI-025**: importer MUST reject ambiguous auth config:
-  - both `ROX_API_TOKEN` and `ROX_ADMIN_PASSWORD` are set → error,
+- **IMP-CLI-025**: importer MUST handle overlapping auth config:
+  - both `ROX_API_TOKEN` and `ROX_ADMIN_PASSWORD` are set → use token mode,
+    emit a warning to stderr (e.g. "both ROX_API_TOKEN and ROX_ADMIN_PASSWORD are set; using token auth"),
   - neither is set → error with help text.
 - **IMP-CLI-027**: `--overwrite-existing` (default `false`):
   - when `false`: existing ACS scan configs with matching `scanName` are skipped (create-only).

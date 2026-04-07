@@ -51,6 +51,8 @@ type Config struct {
 	InsecureSkipVerify bool
 	Contexts           []string
 	ReportJSON         string
+	// Warnings collects non-fatal configuration notices (e.g. overlapping auth vars).
+	Warnings []string
 }
 
 // envFunc is the type for a function that looks up environment variables.
@@ -162,10 +164,12 @@ func inferAuthMode(cfg *Config, getenv envFunc) error {
 
 	switch {
 	case hasToken && hasPassword:
-		// IMP-CLI-025: ambiguous auth
-		return errors.New(
-			"ambiguous auth: both ROX_API_TOKEN and ROX_ADMIN_PASSWORD are set; unset one",
+		// IMP-CLI-025: token takes precedence; emit a warning
+		cfg.Warnings = append(cfg.Warnings,
+			"both ROX_API_TOKEN and ROX_ADMIN_PASSWORD are set; using token auth",
 		)
+		cfg.AuthMode = AuthModeToken
+		cfg.Token = token
 	case hasToken:
 		cfg.AuthMode = AuthModeToken
 		cfg.Token = token
