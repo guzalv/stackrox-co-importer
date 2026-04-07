@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/stackrox/co-importer/internal/acs"
@@ -13,6 +14,8 @@ import (
 	"github.com/stackrox/co-importer/internal/cofetch"
 	"github.com/stackrox/co-importer/internal/config"
 	"github.com/stackrox/co-importer/internal/discover"
+	"github.com/stackrox/co-importer/internal/filter"
+	"github.com/stackrox/co-importer/internal/listssbs"
 	"github.com/stackrox/co-importer/internal/mapping"
 	"github.com/stackrox/co-importer/internal/merge"
 	"github.com/stackrox/co-importer/internal/models"
@@ -112,6 +115,9 @@ func (r *Runner) Run(ctx context.Context) int {
 			continue
 		}
 		totalDiscovered += len(ssbs)
+
+		// IMP-CLI-028: apply --exclude filter before any ACS operations.
+		ssbs = filter.ExcludeSSBs(ssbs, r.cfg.ExcludePatterns)
 
 		for i := range ssbs {
 			ssb := &ssbs[i]
@@ -535,4 +541,32 @@ func containsString(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// ListSSBs implements --list-ssbs mode (IMP-CLI-029): discovers SSBs from all
+// cluster sources, applies --exclude filtering, prints namespace/name sorted to
+// w, and returns exit code 0. ACS is not contacted.
+func ListSSBs(ctx context.Context, cfg *config.Config, w io.Writer) int {
+	printer := status.New()
+	collector := problems.New()
+
+	sources, err := (&Runner{cfg: cfg, acsClient: nil, printer: printer}).buildClusterSources(ctx, collector)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return ExitFatalError
+	}
+
+	var allSSBs []models.ScanSettingBinding
+	for _, src := range sources {
+		ssbs, fetchErr := src.coClient.ListScanSettingBindings(ctx)
+		if fetchErr != nil {
+			printer.Warn(fmt.Sprintf("context %q: failed to list SSBs: %v", src.contextName, fetchErr))
+			continue
+		}
+		allSSBs = append(allSSBs, ssbs...)
+	}
+
+	allSSBs = filter.ExcludeSSBs(allSSBs, cfg.ExcludePatterns)
+	listssbs.Print(allSSBs, w)
+	return ExitSuccess
 }
