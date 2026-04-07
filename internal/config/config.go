@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -51,6 +52,10 @@ type Config struct {
 	InsecureSkipVerify bool
 	Contexts           []string
 	ReportJSON         string
+	// IMP-CLI-028: exclude patterns (validated Go regexes).
+	ExcludePatterns []string
+	// IMP-CLI-029: list SSBs and exit without importing.
+	ListSSBs bool
 	// Warnings collects non-fatal configuration notices (e.g. overlapping auth vars).
 	Warnings []string
 }
@@ -112,6 +117,14 @@ func Parse(args []string, getenv envFunc) (*Config, error) {
 	contexts := fs.StringArray("context", nil,
 		"Kubernetes context to process (repeatable)")
 
+	// IMP-CLI-028: SSB exclusion patterns
+	excludePatterns := fs.StringArray("exclude", nil,
+		"Exclude SSBs whose names match this Go regex (repeatable)")
+
+	// IMP-CLI-029: list-ssbs mode
+	listSSBs := fs.Bool("list-ssbs", false,
+		"List discovered SSBs and exit (no import)")
+
 	if err := fs.Parse(args); err != nil {
 		return nil, fmt.Errorf("flag parse error: %w", err)
 	}
@@ -136,8 +149,10 @@ func Parse(args []string, getenv envFunc) (*Config, error) {
 		MaxRetries:         *maxRetries,
 		CACertFile:         *caCertFile,
 		InsecureSkipVerify: *insecureSkipVerify,
-		Contexts:           *contexts,
-		ReportJSON:         *reportJSON,
+		Contexts:        *contexts,
+		ReportJSON:      *reportJSON,
+		ExcludePatterns: *excludePatterns,
+		ListSSBs:        *listSSBs,
 	}
 
 	// IMP-CLI-002: auto-infer auth mode
@@ -226,6 +241,13 @@ func validate(cfg *Config) error {
 	// IMP-CLI-010: max-retries minimum
 	if cfg.MaxRetries < 0 {
 		return fmt.Errorf("--max-retries must be >= 0 (got %d)", cfg.MaxRetries)
+	}
+
+	// IMP-CLI-028: validate exclude patterns are valid Go regexes
+	for _, p := range cfg.ExcludePatterns {
+		if _, err := regexp.Compile(p); err != nil {
+			return fmt.Errorf("invalid --exclude regex %q: %w", p, err)
+		}
 	}
 
 	return nil

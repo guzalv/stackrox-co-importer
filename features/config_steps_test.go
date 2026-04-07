@@ -239,6 +239,56 @@ func (c *configTestCtx) aWarningIsEmittedContaining(substr string) error {
 	return nil
 }
 
+// IMP-CLI-028: thereAreNoExcludePatterns checks that ExcludePatterns is empty.
+func (c *configTestCtx) thereAreNoExcludePatterns() error {
+	if c.cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if len(c.cfg.ExcludePatterns) != 0 {
+		return fmt.Errorf("ExcludePatterns: got %v, want empty", c.cfg.ExcludePatterns)
+	}
+	return nil
+}
+
+// IMP-CLI-028: theExcludePatternsAre checks ExcludePatterns against a comma-separated expected list.
+func (c *configTestCtx) theExcludePatternsAre(want string) error {
+	if c.cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	wantList := strings.Split(want, ",")
+	if len(c.cfg.ExcludePatterns) != len(wantList) {
+		return fmt.Errorf("ExcludePatterns: got %v, want %v", c.cfg.ExcludePatterns, wantList)
+	}
+	for i, p := range wantList {
+		if c.cfg.ExcludePatterns[i] != p {
+			return fmt.Errorf("ExcludePatterns[%d]: got %q, want %q", i, c.cfg.ExcludePatterns[i], p)
+		}
+	}
+	return nil
+}
+
+// IMP-CLI-029: listssbsIsEnabled checks that ListSSBs is true.
+func (c *configTestCtx) listssbsIsEnabled() error {
+	if c.cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if !c.cfg.ListSSBs {
+		return fmt.Errorf("ListSSBs: got false, want true")
+	}
+	return nil
+}
+
+// IMP-CLI-029: listssbsIsDisabled checks that ListSSBs is false.
+func (c *configTestCtx) listssbsIsDisabled() error {
+	if c.cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if c.cfg.ListSSBs {
+		return fmt.Errorf("ListSSBs: got true, want false")
+	}
+	return nil
+}
+
 // exitCodeIs checks the named exit code constant value.
 // IMP-CLI-017, IMP-CLI-018, IMP-CLI-019
 func exitCodeIs(name string, want int) error {
@@ -289,4 +339,8 @@ func registerConfigSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^insecure-skip-verify is disabled$`, c.insecureSkipVerifyIsDisabled)
 	ctx.Step(`^a warning is emitted containing "([^"]*)"$`, c.aWarningIsEmittedContaining)
 	ctx.Step(`^the "([^"]*)" exit code is (\d+)$`, exitCodeIs)
+	ctx.Step(`^there are no exclude patterns$`, c.thereAreNoExcludePatterns)
+	ctx.Step(`^the exclude patterns are "([^"]*)"$`, c.theExcludePatternsAre)
+	ctx.Step(`^list-ssbs is enabled$`, c.listssbsIsEnabled)
+	ctx.Step(`^list-ssbs is disabled$`, c.listssbsIsDisabled)
 }

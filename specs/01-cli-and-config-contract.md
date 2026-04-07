@@ -45,6 +45,18 @@ Define the importer interface so it can be implemented and tested predictably.
 - **IMP-CLI-010**: `--max-retries <int>` default `5`, min `0`.
 - **IMP-CLI-011**: `--ca-cert-file <path>` optional.
 - **IMP-CLI-012**: `--insecure-skip-verify` default false; MUST require explicit flag.
+- **IMP-CLI-028**: `--exclude <regex>` (repeatable, optional): excludes SSBs whose names match any
+  of the given Go regular expressions.
+  - patterns are compiled at startup; an invalid regex MUST cause a config parse error.
+  - multiple patterns are OR-ed: an SSB is excluded if its name matches any one pattern.
+  - filtering applies after SSBs are fetched and before any ACS operations.
+  - filtering also applies when `--list-ssbs` is used.
+- **IMP-CLI-029**: `--list-ssbs` (boolean, default false): when set, importer fetches SSBs from all
+  configured cluster sources, prints `<namespace>/<name>` for each discovered SSB to stdout (one per
+  line, sorted), then exits with code 0.
+  - `--exclude` filtering applies to the list.
+  - ACS preflight is skipped (no ACS credentials required).
+  - `--dry-run` has no additional effect (the flag is implicitly read-only).
 - **IMP-CLI-024**: for basic mode:
   - username is read from `--username` flag or `ROX_ADMIN_USER` env var (default `admin`).
   - password is read from `ROX_ADMIN_PASSWORD` env var (no flag).

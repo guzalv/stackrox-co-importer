@@ -307,3 +307,54 @@ Feature: CLI and configuration contract
   # IMP-CLI-019
   Scenario: Exit code for partial success is 2
     Then the "partial-success" exit code is 2
+
+  # ─── IMP-CLI-028: --exclude ──────────────────────────────────────────────────
+
+  # IMP-CLI-028
+  Scenario: --exclude defaults to empty (no exclusions)
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with no flags
+    Then config parsing succeeds
+    And there are no exclude patterns
+
+  # IMP-CLI-028
+  Scenario: Single --exclude pattern is stored
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with flags "--exclude ocp4-cis"
+    Then config parsing succeeds
+    And the exclude patterns are "ocp4-cis"
+
+  # IMP-CLI-028
+  Scenario: Multiple --exclude flags are accumulated
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with flags "--exclude ocp4-cis --exclude ocp4-pci.*"
+    Then config parsing succeeds
+    And the exclude patterns are "ocp4-cis,ocp4-pci.*"
+
+  # IMP-CLI-028
+  Scenario: Invalid --exclude regex causes a config parse error
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with flags "--exclude [invalid"
+    Then config parsing fails with error containing "exclude"
+
+  # ─── IMP-CLI-029: --list-ssbs ────────────────────────────────────────────────
+
+  # IMP-CLI-029
+  Scenario: --list-ssbs defaults to false
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with no flags
+    Then config parsing succeeds
+    And list-ssbs is disabled
+
+  # IMP-CLI-029
+  Scenario: --list-ssbs flag enables list mode
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with flags "--list-ssbs"
+    Then config parsing succeeds
+    And list-ssbs is enabled
