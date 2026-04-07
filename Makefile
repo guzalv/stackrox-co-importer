@@ -1,9 +1,13 @@
-.PHONY: test test-verbose test-e2e spec-coverage build clean lint image image-push
+.PHONY: test test-verbose test-e2e spec-coverage build clean lint image image-push setup
 
 BINARY   := compliance-operator-importer
 IMAGE    ?= ghcr.io/guzalv/stackrox-co-importer
 TAG      ?= latest
 ARCHS    := amd64 arm64
+
+## Configure git to use the repo's hooks (run once after cloning)
+setup:
+	git config core.hooksPath .githooks
 
 ## Run all tests (Godog scenarios + Go unit tests)
 test:

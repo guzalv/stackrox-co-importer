@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "==> lint"
+golangci-lint run ./...
+
+echo "==> test"
+go test ./features/... ./internal/...

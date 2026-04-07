@@ -230,7 +230,7 @@ func TestDo_BearerTokenForwarded(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]interface{}{"configurations": []interface{}{}})
 	})
 
-	client.Preflight(context.Background()) //nolint:errcheck // only testing that the auth header is forwarded, not the response
+	_ = client.Preflight(context.Background())
 
 	if gotAuth != "Bearer test-token" {
 		t.Errorf("Authorization header: got %q, want %q", gotAuth, "Bearer test-token")
