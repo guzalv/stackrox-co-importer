@@ -33,6 +33,8 @@ idempotent re-runs, and structured JSON reporting.
   updates them in place.
 - `--dry-run` previews all actions without writing to ACS.
 - Structured JSON report (`--report-json`) for automation and audit.
+- `--exclude <regex>` to skip specific bindings by name pattern (repeatable, Go regex).
+- `--list-ssbs` to print discovered binding names without importing (no ACS credentials required).
 - Retries transient ACS API failures with configurable limits.
 - Static binary, no runtime dependencies. Runs as a container image on
   `amd64` and `arm64`.
@@ -128,6 +130,8 @@ Setting both `ROX_API_TOKEN` and `ROX_ADMIN_PASSWORD` is an error (ambiguous).
 | `--co-namespace`        | `openshift-compliance` | Namespace to read CO resources from.        |
 | `--co-all-namespaces`   | `false`                | Read CO resources from all namespaces.      |
 | `--context`             | all contexts           | Kubernetes context to process (repeatable). |
+| `--exclude <regex>`     |                        | Exclude SSBs whose names match this Go regex (repeatable, OR-ed). |
+| `--list-ssbs`           | `false`                | Print `namespace/name` of all discovered SSBs and exit. No ACS credentials required. |
 | `--dry-run`             | `false`                | Preview actions without writing to ACS.     |
 | `--overwrite-existing`  | `false`                | Update existing ACS scan configs on match.  |
 | `--report-json <path>`  |                        | Write structured JSON report to file.       |
@@ -165,6 +169,36 @@ To limit to specific contexts:
 When the same `ScanSettingBinding` name exists on multiple clusters with
 matching profiles and schedule, the importer merges them into a single ACS
 scan configuration targeting all clusters.
+
+### Selective import with --exclude
+
+Skip specific bindings by name using Go regular expressions. Multiple patterns
+are OR-ed — a binding is excluded if any pattern matches its name.
+
+```bash
+# Skip a specific binding by exact name
+./bin/compliance-operator-importer --exclude "ocp4-cis-node"
+
+# Skip all ocp4-* bindings
+./bin/compliance-operator-importer --exclude "ocp4-.*"
+
+# Combine multiple patterns
+./bin/compliance-operator-importer --exclude "ocp4-cis-node" --exclude "rhcos4-.*"
+```
+
+### Discover bindings without importing (--list-ssbs)
+
+Print all discovered `ScanSettingBindings` (`namespace/name`, sorted) without
+contacting ACS. Useful for understanding what the importer would process, and
+ACS credentials are not required.
+
+```bash
+# List all discovered SSBs
+./bin/compliance-operator-importer --list-ssbs
+
+# List with --exclude filtering applied
+./bin/compliance-operator-importer --list-ssbs --exclude "ocp4-.*"
+```
 
 ### JSON report
 
