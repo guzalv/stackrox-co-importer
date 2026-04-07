@@ -155,9 +155,12 @@ func Parse(args []string, getenv envFunc) (*Config, error) {
 		ListSSBs:        *listSSBs,
 	}
 
-	// IMP-CLI-002: auto-infer auth mode
-	if err := inferAuthMode(cfg, getenv); err != nil {
-		return nil, err
+	// IMP-CLI-029: --list-ssbs does not contact ACS; skip auth validation entirely.
+	if !cfg.ListSSBs {
+		// IMP-CLI-002: auto-infer auth mode
+		if err := inferAuthMode(cfg, getenv); err != nil {
+			return nil, err
+		}
 	}
 
 	// Validate cross-field invariants

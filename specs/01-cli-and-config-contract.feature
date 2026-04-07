@@ -358,3 +358,10 @@ Feature: CLI and configuration contract
     When I parse config with flags "--list-ssbs"
     Then config parsing succeeds
     And list-ssbs is enabled
+
+  # IMP-CLI-029
+  Scenario: --list-ssbs succeeds without ACS credentials
+    Given env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with flags "--list-ssbs"
+    Then config parsing succeeds
+    And list-ssbs is enabled
