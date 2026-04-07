@@ -245,6 +245,59 @@ Teardown: delete all created resources.
 - **IMP-ACC-009**: transient ACS failures MUST follow retry policy and record attempt counts.
 - **IMP-ACC-012**: all per-resource problems MUST be emitted in `problems[]` with remediation hint.
 
+### A10 - --list-ssbs discovery
+
+- **IMP-ACC-023**: `--list-ssbs` MUST print `namespace/name` for each discovered SSB to stdout,
+  sorted lexicographically, and exit 0.
+- **IMP-ACC-024**: `--list-ssbs` MUST succeed without ACS credentials (no `ROX_API_TOKEN` or
+  `ROX_ADMIN_PASSWORD` set).
+- **IMP-ACC-025**: `--list-ssbs` combined with `--exclude` MUST exclude matching SSBs from output.
+
+Command:
+
+```bash
+# List all SSBs (no ACS creds needed)
+"${IMPORTER_BIN}" --list-ssbs
+
+# List with exclusion
+"${IMPORTER_BIN}" --list-ssbs --exclude "ocp4-.*"
+```
+
+Pass conditions:
+
+- exit code is `0`,
+- stdout contains `<namespace>/<name>` lines, one per SSB, sorted,
+- with `--exclude`, matching SSBs are absent from output.
+
+### A11 - --exclude filtering
+
+- **IMP-ACC-026**: `--exclude <regex>` MUST skip SSBs whose names match the pattern, counting
+  them as discovered but not processing them (not in `created`, `skipped`, or `failed` counts).
+- **IMP-ACC-027**: multiple `--exclude` patterns MUST be OR-ed.
+
+Setup:
+
+1. Create two ScanSettingBindings: `e2e-include-<run-id>` and `e2e-exclude-<run-id>`.
+
+Command:
+
+```bash
+"${IMPORTER_BIN}" \
+  --endpoint "${ROX_ENDPOINT}" \
+  --co-namespace "${CO_NAMESPACE}" \
+  --dry-run \
+  --exclude "e2e-exclude-.*" \
+  --report-json "/tmp/co-acs-import-exclude.json"
+```
+
+Pass conditions:
+
+- `e2e-include-<run-id>` appears in `items[]` with expected action,
+- `e2e-exclude-<run-id>` does NOT appear in `items[]`,
+- `counts.discovered` reflects total SSBs found before filtering.
+
+Teardown: delete both ScanSettingBindings and their ScanSettings.
+
 ## Non-goal compliance checks
 
 - **IMP-ACC-010**: no code changes in Sensor/Central runtime paths are required to run importer.
