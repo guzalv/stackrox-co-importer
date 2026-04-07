@@ -3,6 +3,7 @@ package acs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,7 +15,7 @@ import (
 
 func TestSetAuth_Token(t *testing.T) {
 	c := &httpClient{token: "my-token"}
-	req, _ := http.NewRequest(http.MethodGet, "http://x", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://x", http.NoBody)
 	c.setAuth(req)
 
 	got := req.Header.Get("Authorization")
@@ -25,7 +26,7 @@ func TestSetAuth_Token(t *testing.T) {
 
 func TestSetAuth_BasicAuth(t *testing.T) {
 	c := &httpClient{username: "admin", password: "secret"}
-	req, _ := http.NewRequest(http.MethodGet, "http://x", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://x", http.NoBody)
 	c.setAuth(req)
 
 	user, pass, ok := req.BasicAuth()
@@ -40,7 +41,7 @@ func TestSetAuth_BasicAuth(t *testing.T) {
 // Token takes priority over basic auth credentials.
 func TestSetAuth_TokenTakesPriority(t *testing.T) {
 	c := &httpClient{token: "tok", username: "admin", password: "secret"}
-	req, _ := http.NewRequest(http.MethodGet, "http://x", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://x", http.NoBody)
 	c.setAuth(req)
 
 	got := req.Header.Get("Authorization")
@@ -51,7 +52,7 @@ func TestSetAuth_TokenTakesPriority(t *testing.T) {
 
 func TestSetAuth_NoCredentials(t *testing.T) {
 	c := &httpClient{}
-	req, _ := http.NewRequest(http.MethodGet, "http://x", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://x", http.NoBody)
 	c.setAuth(req)
 
 	if auth := req.Header.Get("Authorization"); auth != "" {
@@ -229,7 +230,7 @@ func TestDo_BearerTokenForwarded(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]interface{}{"configurations": []interface{}{}})
 	})
 
-	client.Preflight(context.Background()) //nolint:errcheck
+	client.Preflight(context.Background()) //nolint:errcheck // only testing that the auth header is forwarded, not the response
 
 	if gotAuth != "Bearer test-token" {
 		t.Errorf("Authorization header: got %q, want %q", gotAuth, "Bearer test-token")
@@ -242,14 +243,5 @@ func isHTTPError(err error, target **HTTPError) bool {
 	if err == nil {
 		return false
 	}
-	var e *HTTPError
-	if strings.Contains(err.Error(), "") {
-		// unwrap manually since HTTPError doesn't wrap
-		if e2, ok := err.(*HTTPError); ok {
-			*target = e2
-			return true
-		}
-	}
-	_ = e
-	return false
+	return errors.As(err, target)
 }

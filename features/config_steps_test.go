@@ -35,7 +35,7 @@ func (c *configTestCtx) parseConfigWithFlags(flagsStr string) {
 
 func (c *configTestCtx) configParsingSuceeds() error {
 	if c.err != nil {
-		return fmt.Errorf("expected no error, got: %v", c.err)
+		return fmt.Errorf("expected no error, got: %w", c.err)
 	}
 	return nil
 }
@@ -52,7 +52,7 @@ func (c *configTestCtx) configParsingFailsWithErrorContaining(substr string) err
 		return fmt.Errorf("expected error containing %q, got nil", substr)
 	}
 	if !strings.Contains(c.err.Error(), substr) {
-		return fmt.Errorf("expected error containing %q, got: %v", substr, c.err)
+		return fmt.Errorf("expected error containing %q, got: %w", substr, c.err)
 	}
 	return nil
 }
@@ -62,7 +62,7 @@ func (c *configTestCtx) theErrorAlsoContains(substr string) error {
 		return fmt.Errorf("no error was returned; cannot check for %q", substr)
 	}
 	if !strings.Contains(c.err.Error(), substr) {
-		return fmt.Errorf("expected error to also contain %q, got: %v", substr, c.err)
+		return fmt.Errorf("expected error to also contain %q, got: %w", substr, c.err)
 	}
 	return nil
 }
@@ -183,7 +183,7 @@ func (c *configTestCtx) theRequestTimeoutIs(want string) error {
 	}
 	d, err := time.ParseDuration(want)
 	if err != nil {
-		return fmt.Errorf("invalid duration %q in step: %v", want, err)
+		return fmt.Errorf("invalid duration %q in step: %w", want, err)
 	}
 	if c.cfg.RequestTimeout != d {
 		return fmt.Errorf("request timeout: got %v, want %v", c.cfg.RequestTimeout, d)
