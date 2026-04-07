@@ -37,6 +37,13 @@ func runMain() int {
 		return config.ExitConfigError
 	}
 
+	// IMP-CLI-029: --list-ssbs skips ACS entirely.
+	if cfg.ListSSBs {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer cancel()
+		return run.ListSSBs(ctx, cfg, os.Stdout)
+	}
+
 	// Create ACS HTTP client.
 	acsClient, err := acs.NewHTTPClient(acs.HTTPClientConfig{
 		Endpoint:           cfg.Endpoint,
