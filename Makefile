@@ -10,8 +10,14 @@ setup:
 	git config core.hooksPath .githooks
 
 ## Run all tests (Godog scenarios + Go unit tests)
-test:
+test: _check-hooks
 	go test ./features/... ./internal/...
+
+## Warn if git hooks aren't activated (not fatal — hooks can't be forced)
+_check-hooks:
+	@if [ "$$(git config core.hooksPath)" != ".githooks" ]; then \
+		echo "WARNING: pre-commit hooks not active. Run 'make setup' to enable lint+test on every commit."; \
+	fi
 
 ## Run tests with verbose Godog output (shows each step)
 test-verbose:

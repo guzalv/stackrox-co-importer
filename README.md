@@ -180,6 +180,18 @@ any issues encountered.
 
 ## Development
 
+### First-time setup
+
+After cloning, activate the pre-commit hooks (runs lint + unit tests before
+every commit):
+
+```bash
+make setup
+```
+
+This is a one-time step per clone. Without it, lint and test errors will only
+be caught by CI after the push.
+
 ### Running tests
 
 ```bash
