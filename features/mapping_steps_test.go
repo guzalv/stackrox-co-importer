@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/cucumber/godog"
 	"github.com/stackrox/co-importer/internal/adopt"
@@ -289,7 +290,7 @@ func registerMappingSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the importer MUST log an info message about the adoption$`, importerMustLogAdoptionInfo)
 	ctx.Step(`^SSB "([^"]*)" settingsRef\.name MUST NOT be modified$`, ssbSettingsRefMustNotBeModified)
 	ctx.Step(`^ACS has NOT yet created ScanSetting "([^"]*)" on the cluster$`, acsHasNotCreatedScanSetting)
-	ctx.Step(`^the adoption poll times out$`, adoptionPollTimesOut)
+	ctx.Step(`^the adoption poll times out after at least (\d+) seconds$`, adoptionPollTimesOut)
 	ctx.Step(`^the importer MUST log a warning$`, importerMustLogWarning)
 	ctx.Step(`^the SSB MUST NOT be modified$`, ssbMustNotBeModified)
 	ctx.Step(`^the importer MUST NOT exit with an error$`, importerMustNotExitWithError)
@@ -1228,9 +1229,9 @@ func ssbSettingsRefMustNotBeModified(ssbName string) error {
 	return fmt.Errorf("SSB %q not found in adoption state", ssbName)
 }
 
-func adoptionPollTimesOut() error {
+func adoptionPollTimesOut(minSeconds int) error {
 	// IMP-ADOPT-004..006
-	// Run adoption with a 0 timeout, so it immediately times out
+	// Run adoption with the specified minimum timeout
 	var requests []adopt.AdoptionRequest
 	for _, as := range mtc.adoptionSSBs {
 		requests = append(requests, adopt.AdoptionRequest{
@@ -1242,7 +1243,15 @@ func adoptionPollTimesOut() error {
 		})
 	}
 
-	result := adopt.RunAdoption(mtc.adoptionK8s, requests, 0)
+	timeout := time.Duration(minSeconds) * time.Second
+	start := time.Now()
+	result := adopt.RunAdoption(mtc.adoptionK8s, requests, timeout)
+	elapsed := time.Since(start)
+
+	if elapsed < timeout {
+		return fmt.Errorf("adoption poll returned after %v, expected at least %v", elapsed, timeout)
+	}
+
 	mtc.adoptionLogs = result.InfoLogs
 	mtc.adoptionWarnings = result.Warnings
 	mtc.adoptionExitErr = result.Err
