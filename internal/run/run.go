@@ -284,7 +284,7 @@ func (r *Runner) Run(ctx context.Context) int {
 	if len(adoptionRequests) > 0 && !r.cfg.DryRun {
 		r.printer.Stage("Running adoption workflow", "")
 		adoptK8s := newAdoptionK8sAdapter(sources)
-		adoptResult := adopt.RunAdoption(adoptK8s, adoptionRequests, 0)
+		adoptResult := adopt.RunAdoption(adoptK8s, adoptionRequests, adopt.DefaultPollTimeout)
 		for _, info := range adoptResult.InfoLogs {
 			r.printer.OK(info)
 		}

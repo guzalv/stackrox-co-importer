@@ -97,7 +97,7 @@ func TestRunAdoption_ScanSettingNotYetExist(t *testing.T) {
 		CurrentSetting: "old-ss", TargetSetting: "acs-managed-ss",
 	}
 
-	result := RunAdoption(k8s, []AdoptionRequest{req}, time.Second)
+	result := RunAdoption(k8s, []AdoptionRequest{req}, 50*time.Millisecond)
 
 	if result.Err != nil {
 		t.Errorf("unexpected fatal error: %v", result.Err)
@@ -162,7 +162,7 @@ func TestRunAdoption_MultipleRequests(t *testing.T) {
 		{Context: "ctx-b", Namespace: "ns", SSBName: "ssb-1", CurrentSetting: "old", TargetSetting: "acs-ss"},
 	}
 
-	result := RunAdoption(k8s, reqs, time.Second)
+	result := RunAdoption(k8s, reqs, 50*time.Millisecond)
 
 	if result.Err != nil {
 		t.Errorf("unexpected fatal error: %v", result.Err)

@@ -33,10 +33,17 @@ type AdoptionResult struct {
 	Err      error // nil = no fatal error (partial success is OK)
 }
 
+// DefaultPollTimeout is the minimum time the adoption step polls for the
+// ACS-created ScanSetting before giving up (IMP-ADOPT-004..006).
+const DefaultPollTimeout = 2 * time.Second
+
+// pollInterval is the delay between ScanSettingExists checks during polling.
+const pollInterval = 200 * time.Millisecond
+
 // RunAdoption processes adoption requests independently per cluster.
 // IMP-ADOPT-003: skip if current == target.
 // IMP-ADOPT-001/002: patch if ScanSetting exists.
-// IMP-ADOPT-004..006: warn on timeout, don't error.
+// IMP-ADOPT-004..006: poll for at least 2s, then warn on timeout, don't error.
 // IMP-ADOPT-007: patch independently per cluster.
 // IMP-ADOPT-008: partial success is OK.
 func RunAdoption(k8s K8sClient, requests []AdoptionRequest, pollTimeout time.Duration) AdoptionResult {
@@ -51,8 +58,8 @@ func RunAdoption(k8s K8sClient, requests []AdoptionRequest, pollTimeout time.Dur
 			continue
 		}
 
-		// Check if the ACS-created ScanSetting exists
-		exists, err := k8s.ScanSettingExists(req.Context, req.Namespace, req.TargetSetting)
+		// IMP-ADOPT-004..006: poll for the ACS-created ScanSetting until timeout
+		exists, err := pollForScanSetting(k8s, req, pollTimeout)
 		if err != nil {
 			result.Warnings = append(result.Warnings,
 				fmt.Sprintf("error checking ScanSetting %q on %s: %v", req.TargetSetting, req.Context, err))
@@ -81,4 +88,23 @@ func RunAdoption(k8s K8sClient, requests []AdoptionRequest, pollTimeout time.Dur
 
 	// IMP-ADOPT-006/008: never set fatal error for timeouts/partial failures
 	return result
+}
+
+// pollForScanSetting checks for a ScanSetting, retrying until pollTimeout expires.
+// A zero or negative pollTimeout means a single immediate check (no retries).
+func pollForScanSetting(k8s K8sClient, req AdoptionRequest, timeout time.Duration) (bool, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		exists, err := k8s.ScanSettingExists(req.Context, req.Namespace, req.TargetSetting)
+		if err != nil {
+			return false, err
+		}
+		if exists {
+			return true, nil
+		}
+		if time.Now().After(deadline) {
+			return false, nil
+		}
+		time.Sleep(pollInterval)
+	}
 }
