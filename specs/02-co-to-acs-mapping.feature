@@ -174,13 +174,15 @@ Feature: Map Compliance Operator scheduled scan resources to ACS scan configurat
     Then SSB "cis-weekly" settingsRef.name MUST NOT be modified
 
   # IMP-ADOPT-004, IMP-ADOPT-005, IMP-ADOPT-006
+  # The adoption step polls for the ACS-created ScanSetting for at least 2 seconds
+  # before giving up and emitting a warning.
   @mapping @adopt @timeout
   Scenario: Adoption warns on timeout waiting for ScanSetting
     Given ScanSettingBinding "cis-weekly" in namespace "openshift-compliance"
     And the SSB references ScanSetting "my-old-setting"
     And the importer successfully creates ACS scan config "cis-weekly"
     And ACS has NOT yet created ScanSetting "cis-weekly" on the cluster
-    When the adoption poll times out
+    When the adoption poll times out after at least 2 seconds
     Then the importer MUST log a warning
     And the SSB MUST NOT be modified
     And the importer MUST NOT exit with an error

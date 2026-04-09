@@ -7,3 +7,4 @@ coverage.out
 coverage.html
 /compliance-operator-importer
 dist/
+hack/.demo-seed-id
