@@ -281,7 +281,7 @@ Releases are fully automated. Every commit to `main` that passes e2e tests
 produces a new patch release with:
 
 - Multi-arch binaries (linux/darwin, amd64/arm64)
-- Multi-arch container images on `ghcr.io/guzalv/co-acs-importer`
+- Multi-arch container images on `ghcr.io/guzalv/stackrox-co-importer`
 - SHA256 checksums
 
 No manual tagging or release action is needed.

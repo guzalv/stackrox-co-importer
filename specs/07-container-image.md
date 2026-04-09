@@ -48,7 +48,7 @@ The Makefile MUST provide:
 ### IMP-IMG-005: Image metadata
 
 The image MUST include OCI labels:
-- `org.opencontainers.image.title=co-acs-importer`
+- `org.opencontainers.image.title=stackrox-co-importer`
 - `org.opencontainers.image.description=Compliance Operator to ACS scan configuration importer`
 - `org.opencontainers.image.source=https://github.com/stackrox/stackrox`
 
