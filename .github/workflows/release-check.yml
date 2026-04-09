@@ -1,0 +1,36 @@
+name: Release check
+
+# GitHub suppresses push events when GITHUB_TOKEN merges a PR (auto-merge).
+# This scheduled workflow detects unreleased commits on main and dispatches CI
+# to produce the release. workflow_dispatch is exempt from GITHUB_TOKEN
+# suppression, so the dispatched CI run will include the release job.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for unreleased commits
+        id: check
+        run: |
+          head_tag=$(git tag --points-at HEAD | grep '^v' | head -1 || true)
+          if [ -n "$head_tag" ]; then
+            echo "HEAD already tagged as ${head_tag}, nothing to release"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "HEAD is untagged, release needed"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dispatch CI workflow
+        if: steps.check.outputs.needed == 'true'
+        run: gh workflow run ci.yml --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
