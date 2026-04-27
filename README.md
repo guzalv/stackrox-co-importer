@@ -39,6 +39,46 @@ idempotent re-runs, and structured JSON reporting.
 - Static binary, no runtime dependencies. Runs as a container image on
   `amd64` and `arm64`.
 
+## Quickstart
+
+### Docker
+
+Pass your kubeconfig and credentials as environment variables. Start with
+`--dry-run` to preview what would be imported before making any changes.
+
+```bash
+docker run --rm \
+  -e ROX_ENDPOINT="https://central.example.com" \
+  -e ROX_API_TOKEN="your-token-here" \
+  -v "$HOME/.kube/config:/root/.kube/config:ro" \
+  ghcr.io/guzalv/stackrox-co-importer:latest --dry-run
+```
+
+Drop `--dry-run` to apply the import. For multi-cluster setups, mount
+additional kubeconfig files and point `KUBECONFIG` at them:
+
+```bash
+docker run --rm \
+  -e ROX_ENDPOINT="https://central.example.com" \
+  -e ROX_API_TOKEN="your-token-here" \
+  -e KUBECONFIG="/kube/cluster-a:/kube/cluster-b" \
+  -v "$HOME/.kube/cluster-a:/kube/cluster-a:ro" \
+  -v "$HOME/.kube/cluster-b:/kube/cluster-b:ro" \
+  ghcr.io/guzalv/stackrox-co-importer:latest --dry-run
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/guzalv/stackrox-co-importer.git
+cd stackrox-co-importer
+make build
+
+export ROX_ENDPOINT="https://central.example.com"
+export ROX_API_TOKEN="your-token-here"
+./bin/compliance-operator-importer --dry-run
+```
+
 ## Prerequisites
 
 ### ACS / StackRox
@@ -70,46 +110,10 @@ but never modifies them.
 
 ### Local tools
 
-- Go 1.23+ (to build from source)
 - `kubectl` or `oc` configured with kubeconfigs for your target clusters
-- `docker` or `podman` (only if building/running the container image)
-
-## Installation
-
-### From source
-
-```bash
-git clone https://github.com/guzalv/stackrox-co-importer.git
-cd stackrox-co-importer
-make build
-# Binary is at ./bin/compliance-operator-importer
-```
-
-### Container image
-
-```bash
-# Build for your local architecture
-make image
-
-# Or pull a pre-built image (when available)
-docker pull ghcr.io/guzalv/stackrox-co-importer:latest
-```
+- `docker` or `podman` (to run the container image), or Go 1.23+ (to build from source)
 
 ## Usage
-
-### Quick start
-
-```bash
-# Set credentials
-export ROX_ENDPOINT="https://central.example.com:443"
-export ROX_API_TOKEN="your-token-here"
-
-# Preview what would be imported (no changes made)
-./bin/compliance-operator-importer --dry-run
-
-# Import scan configurations
-./bin/compliance-operator-importer
-```
 
 ### Authentication
 
