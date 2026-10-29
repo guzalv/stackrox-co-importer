@@ -365,3 +365,93 @@ Feature: CLI and configuration contract
     When I parse config with flags "--list-ssbs"
     Then config parsing succeeds
     And list-ssbs is enabled
+
+  # ─── IMP-CLI-030, IMP-CLI-031: --delete-existing / --yes ────────────────────
+
+  # IMP-CLI-030
+  Scenario: --delete-existing defaults to false
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with no flags
+    Then config parsing succeeds
+    And delete-existing is disabled
+
+  # IMP-CLI-030
+  Scenario: --delete-existing flag enables delete mode
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    And stdin is a TTY
+    When I parse config with flags "--delete-existing"
+    Then config parsing succeeds
+    And delete-existing is enabled
+
+  # IMP-CLI-031
+  Scenario: --yes defaults to false
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with no flags
+    Then config parsing succeeds
+    And confirm-yes is disabled
+
+  # IMP-CLI-031
+  Scenario: --yes flag is accepted alongside --delete-existing
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with flags "--delete-existing --yes"
+    Then config parsing succeeds
+    And delete-existing is enabled
+    And confirm-yes is enabled
+
+  # ─── IMP-CLI-034: --delete-existing requires --yes on non-interactive stdin ──
+
+  # IMP-CLI-034
+  Scenario: --delete-existing without --yes fails on non-interactive stdin
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    And stdin is not a TTY
+    When I parse config with flags "--delete-existing"
+    Then config parsing fails with error containing "--yes"
+
+  # IMP-CLI-034
+  Scenario: --delete-existing with --yes succeeds on non-interactive stdin
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    And stdin is not a TTY
+    When I parse config with flags "--delete-existing --yes"
+    Then config parsing succeeds
+
+  # ─── IMP-CLI-032: --backup-dir ───────────────────────────────────────────────
+
+  # IMP-CLI-032
+  Scenario: --backup-dir defaults to a timestamped directory
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with no flags
+    Then config parsing succeeds
+    And the backup dir matches pattern "co-importer-backup-.+"
+
+  # IMP-CLI-032
+  Scenario: Custom backup dir via --backup-dir
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with flags "--backup-dir /tmp/my-backups"
+    Then config parsing succeeds
+    And the backup dir is "/tmp/my-backups"
+
+  # ─── IMP-CLI-033: --settle-timeout ───────────────────────────────────────────
+
+  # IMP-CLI-033
+  Scenario: Settle timeout defaults to 5s
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with no flags
+    Then config parsing succeeds
+    And the settle timeout is "5s"
+
+  # IMP-CLI-033
+  Scenario: Custom settle timeout via --settle-timeout
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    When I parse config with flags "--settle-timeout 15s"
+    Then config parsing succeeds
+    And the settle timeout is "15s"

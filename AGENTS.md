@@ -78,7 +78,7 @@ early, AI agents MUST validate against a real cluster at these checkpoints:
 | First full mapping pipeline                  | `--dry-run`: does the output make sense for real CO resources? |
 | Reconcile/create path (`internal/reconcile/`)| Apply mode: does the created ACS scan config appear in Central? |
 | Idempotency                                  | Second run: does it skip with no errors? |
-| Adoption workflow                            | Does SSB patching work against the real cluster? |
+| Adopt-external workflow (`internal/adoptexternal/`) | Does the backup → delete → settle-timeout-guard → create flow work against a real cluster, including a GitOps-managed external SSB (see IMP-ACC-028..030)? |
 
 **How to validate:** build the binary (`make build`) and run it against the test
 cluster. Compare output/report against what you see in the ACS API and kubectl.
