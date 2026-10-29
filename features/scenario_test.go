@@ -11,4 +11,11 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerMappingSteps(ctx)
 	registerIdempotencySteps(ctx)
 	registerExcludeSteps(ctx)
+	registerBackupSteps(ctx)
+	registerDeleteConfirmSteps(ctx)
+	registerSettleSteps(ctx)
+	registerMulticlusterBlockerSteps(ctx)
+	registerCreateOrphanSteps(ctx)
+	registerResumeSteps(ctx)
+	registerDryRunSteps(ctx)
 }

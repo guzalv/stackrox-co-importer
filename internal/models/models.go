@@ -19,8 +19,9 @@ func (r ProfileRef) ResolvedKind() string {
 type ScanSettingBinding struct {
 	Namespace       string
 	Name            string
-	ScanSettingName string       // name of the referenced ScanSetting
-	Profiles        []ProfileRef // profile references from the binding
+	ScanSettingName string            // name of the referenced ScanSetting
+	Profiles        []ProfileRef      // profile references from the binding
+	Labels          map[string]string // K8s labels; used to detect ACS-managed vs external SSBs (IMP-ADEXT-001, IMP-ADEXT-013)
 }
 
 // ScanSetting is a simplified representation of the CO ScanSetting resource.
