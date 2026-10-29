@@ -4,17 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/cucumber/godog"
-	"github.com/stackrox/co-importer/internal/adopt"
+	"github.com/stackrox/co-importer/internal/adoptexternal"
 	"github.com/stackrox/co-importer/internal/discover"
 	"github.com/stackrox/co-importer/internal/mapping"
 	"github.com/stackrox/co-importer/internal/merge"
 	"github.com/stackrox/co-importer/internal/models"
 	"github.com/stackrox/co-importer/internal/problems"
+	"github.com/stackrox/co-importer/internal/reconcile"
 )
 
 // --- Fake types for cluster discovery ---
@@ -83,52 +85,14 @@ func (f *fakeACSClusterLister) ListClusters() ([]discover.ACSCluster, error) {
 	return f.clusters, nil
 }
 
-// --- Fake types for adoption ---
-
-// fakeAdoptionK8s implements adopt.K8sClient for tests.
-type fakeAdoptionK8s struct {
-	scanSettings map[string]bool   // "ctx/namespace/name" -> exists
-	patchedSSBs  map[string]string // "ctx/namespace/ssbName" -> new settingsRef
-}
-
-func newFakeAdoptionK8s() *fakeAdoptionK8s {
-	return &fakeAdoptionK8s{
-		scanSettings: make(map[string]bool),
-		patchedSSBs:  make(map[string]string),
-	}
-}
-
-func (f *fakeAdoptionK8s) ScanSettingExists(ctxName, namespace, name string) (bool, error) {
-	key := ctxName + "/" + namespace + "/" + name
-	return f.scanSettings[key], nil
-}
-
-func (f *fakeAdoptionK8s) PatchSSBSettingsRef(ctxName, namespace, ssbName, newSettingsRef string) error {
-	key := ctxName + "/" + namespace + "/" + ssbName
-	f.patchedSSBs[key] = newSettingsRef
-	return nil
-}
-
 // --- Fake types for multicluster merge ---
 
 // clusterSSBEntry tracks an SSB on a specific cluster context.
 type clusterSSBEntry struct {
-	Context    string
-	SSB        *models.ScanSettingBinding
-	Schedule   string
-	ClusterID  string
-}
-
-// --- Fake types for adoption context ---
-
-// adoptionSSBState tracks adoption state for a single SSB on a cluster context.
-type adoptionSSBState struct {
-	Context         string
-	Namespace       string
-	SSBName         string
-	CurrentSetting  string
-	ACSConfigName   string
-	ScanSettingReady bool
+	Context   string
+	SSB       *models.ScanSettingBinding
+	Schedule  string
+	ClusterID string
 }
 
 // mappingTestContext shares state between steps within a scenario.
@@ -139,13 +103,13 @@ type mappingTestContext struct {
 	payload     *models.ACSPayload
 	payloadJSON []byte
 	problems    *problems.Collector
-	skipped map[string]bool // tracks skipped SSBs
+	skipped     map[string]bool // tracks skipped SSBs
 
 	// Cluster discovery
-	fakeKube    *fakeKubeReader
-	fakeACSList *fakeACSClusterLister
-	resolvedID  string
-	discoveryErr  error
+	fakeKube     *fakeKubeReader
+	fakeACSList  *fakeACSClusterLister
+	resolvedID   string
+	discoveryErr error
 
 	// Multicluster
 	clusterSSBs   []*clusterSSBEntry
@@ -158,13 +122,72 @@ type mappingTestContext struct {
 	processedResults map[string]bool // SSB name -> processed?
 	scanSettings     map[string]*models.ScanSetting
 
-	// Adoption
-	adoptionSSBs     []*adoptionSSBState
-	adoptionK8s      *fakeAdoptionK8s
-	adoptionLogs     []string
-	adoptionWarnings []string
-	adoptionExitErr  error
-	adoptionConfName string
+	// Adopt-external detection (IMP-ADEXT-001, IMP-ADEXT-013)
+	adextMode           bool // true once an adopt-external-style "Given" step runs
+	adextTargetScanName string
+	adextBlocked        bool
+	adextBlockingSSB    *models.ScanSettingBinding
+	adextSourceBindings []models.ScanSettingBinding
+
+	// Adopt-external backup (IMP-ADEXT-002, IMP-ADEXT-015)
+	backupDir  string // temp dir used as --backup-dir for the current scenario
+	backupErr  error  // error returned by adoptexternal.WriteBackup
+	startupErr error  // error returned by adoptexternal.CheckBackupDir
+	ssbDeleted bool   // whether any ScanSettingBinding delete has happened
+
+	// Adopt-external report-and-skip / delete-with-confirmation decision
+	// (IMP-ADEXT-003, IMP-ADEXT-004, IMP-ADEXT-005)
+	adextDeleteExisting bool // --delete-existing
+	adextYes            bool // --yes
+	adextDeleter        *fakeDeleter
+	adextConfirmer      *fakeConfirmer
+	adextDeleted        bool  // ResolveBlocker's "proceed" return value (blockers confirmed gone)
+	adextResolveErr     error // ResolveBlocker's error return value
+
+	// Adopt-external settle-timeout guard against GitOps self-heal
+	// (IMP-ADEXT-006, IMP-ADEXT-007)
+	adextExister       *fakeExister
+	adextSettleTimeout time.Duration
+	adextPoll          func(time.Duration)
+
+	// Adopt-external multi-cluster all-clear gate (IMP-ADEXT-008): a single
+	// scanName blocked by external ScanSettingBindings on multiple clusters
+	// at once.
+	adextMultiCluster    bool // true once a "kubecontext X has a blocking SSB" Given step runs
+	adextClusterBlockers []merge.ClusterSSB
+	adextMultiExister    *fakeMultiExister
+
+	// Adopt-external create-after-clear (IMP-ADEXT-009) and orphaned
+	// ScanSetting warning (IMP-ADEXT-010): once a blocker is cleared, the
+	// actual create routes through the normal reconcile.Reconciler so
+	// idempotency is preserved.
+	adextCreateAfterClear  bool // true once a "was already cleared"/"was successfully created" Given step runs
+	adextACSClient         *fakeACSClient
+	adextReconciler        *reconcile.Reconciler
+	adextReconcileResult   reconcile.ActionResult
+	adextOrphanScanSetting string // name of the ScanSetting a deleted blocker referenced, if any
+	adextOrphanContext     string
+	adextOrphanNamespace   string
+
+	// Adopt-external resume from a persisted plan (IMP-ADEXT-011,
+	// IMP-ADEXT-012): a subsequent run reads plan.json back instead of
+	// relying on live discovery, since the blocking SSB may already be
+	// gone (deleted in a prior interrupted run, or manually by the
+	// operator).
+	adextResumeTargetScan       string                 // scan configuration name the resume scenario is about
+	adextResumeWrittenEnv       adoptexternal.EnvStamp // env stamped into the plan.json written by the "Given" step
+	adextResumeCurrentEnv       adoptexternal.EnvStamp // env the current run claims to be
+	adextResumePlan             *adoptexternal.Plan    // plan loaded back by adoptexternal.LoadPlan
+	adextResumeLoadErr          error                  // error returned by adoptexternal.LoadPlan
+	adextResumeEnvErr           error                  // error returned by adoptexternal.ValidateEnvironment
+	adextResumeUsedPlan         bool                   // true once the resume flow proceeded to create from the plan
+	adextResumeSSBConfirmedGone bool                   // "ScanSettingBinding ... no longer exists on any cluster" precondition
+
+	// Adopt-external dry-run (IMP-ADEXT-014): --dry-run MUST perform zero
+	// side effects anywhere in the adoption workflow — no backup, no
+	// deletion, no ACS create/update — and only log what it would do.
+	adextDryRun    bool     // --dry-run
+	adextDryRunLog []string // human-readable "would do X" messages returned by adoptexternal.DryRunBlocker
 }
 
 // validationBinding stores a binding + whether it has a valid ScanSetting.
@@ -187,7 +210,8 @@ func resetMappingTestContext() {
 		mergeProblems:    problems.New(),
 		processedResults: make(map[string]bool),
 		scanSettings:     make(map[string]*models.ScanSetting),
-		adoptionK8s:      newFakeAdoptionK8s(),
+		adextDeleter:     newFakeDeleter(),
+		adextConfirmer:   newFakeConfirmer(),
 	}
 }
 
@@ -281,40 +305,27 @@ func registerMappingSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^that problem entry MUST include a fix hint$`, problemMustIncludeFixHint)
 	ctx.Step(`^other valid bindings MUST still be processed$`, otherBindingsMustStillBeProcessed)
 
-	// @mapping @adopt — IMP-ADOPT-001..008
-	ctx.Step(`^the SSB references ScanSetting "([^"]*)"$`, theSSBReferencesScanSetting)
-	ctx.Step(`^the importer successfully creates ACS scan config "([^"]*)"$`, importerCreatesACSConfig)
-	ctx.Step(`^ACS creates ScanSetting "([^"]*)" on the cluster$`, acsCreatesScanSettingOnCluster)
-	ctx.Step(`^the importer runs the adoption step$`, importerRunsAdoptionStep)
-	ctx.Step(`^SSB "([^"]*)" settingsRef\.name MUST be patched to "([^"]*)"$`, ssbSettingsRefMustBePatched)
-	ctx.Step(`^the importer MUST log an info message about the adoption$`, importerMustLogAdoptionInfo)
-	ctx.Step(`^SSB "([^"]*)" settingsRef\.name MUST NOT be modified$`, ssbSettingsRefMustNotBeModified)
-	ctx.Step(`^ACS has NOT yet created ScanSetting "([^"]*)" on the cluster$`, acsHasNotCreatedScanSetting)
-	ctx.Step(`^the adoption poll times out after at least (\d+) seconds$`, adoptionPollTimesOut)
-	ctx.Step(`^the importer MUST log a warning$`, importerMustLogWarning)
-	ctx.Step(`^the SSB MUST NOT be modified$`, ssbMustNotBeModified)
-	ctx.Step(`^the importer MUST NOT exit with an error$`, importerMustNotExitWithError)
-
-	// @mapping @adopt @multicluster
-	ctx.Step(`^kubecontext "([^"]*)" has SSB "([^"]*)" referencing ScanSetting "([^"]*)"$`, kubecontextHasSSBReferencingScanSetting)
-	ctx.Step(`^the importer creates one ACS scan config "([^"]*)" for both clusters$`, importerCreatesConfigForBothClusters)
-	ctx.Step(`^ACS creates ScanSetting "([^"]*)" on both clusters$`, acsCreatesScanSettingOnBothClusters)
-	ctx.Step(`^SSB "([^"]*)" on ctx-([a-z]) MUST be patched to reference "([^"]*)"$`, ssbOnCtxMustBePatched)
-	ctx.Step(`^SSB "([^"]*)" on ctx-([a-z]) MUST be patched$`, ssbOnCtxMustBePatchedSimple)
-	ctx.Step(`^ACS creates ScanSetting "([^"]*)" on ctx-([a-z]) but NOT on ctx-([a-z])$`, acsCreatesScanSettingOnOneCtx)
-	ctx.Step(`^the importer MUST warn about ctx-([a-z]) timeout$`, importerMustWarnAboutCtxTimeout)
-
 	// @mapping @schedule @problems — IMP-MAP-012..015
 	ctx.Step(`^problem description MUST mention schedule conversion failed$`, problemMustMentionScheduleConversionFailed)
 	ctx.Step(`^problem fix hint MUST suggest using a valid cron expression$`, problemFixHintMustSuggestValidCron)
 	ctx.Step(`^"([^"]*)" MUST be skipped$`, ssbMustBeSkipped)
+
+	// @adopt-external @detect — IMP-ADEXT-001, IMP-ADEXT-013
+	ctx.Step(`^ScanSettingBinding "([^"]*)" in namespace "([^"]*)" references profiles \[(.*)\]$`, ssbInNamespaceReferencesProfilesList)
+	ctx.Step(`^the SSB has no "app\.kubernetes\.io/name: stackrox" label$`, theSSBHasNoStackroxLabel)
+	ctx.Step(`^the SSB has the "app\.kubernetes\.io/name: stackrox" label$`, theSSBHasStackroxLabel)
+	ctx.Step(`^no ACS scan configuration named "([^"]*)" exists$`, noACSScanConfigurationNamedExists)
+	ctx.Step(`^"([^"]*)" MUST be identified as blocked by an external ScanSettingBinding$`, ssbMustBeIdentifiedAsBlocked)
+	ctx.Step(`^the blocking ScanSettingBinding MUST be "([^"]*)" in namespace "([^"]*)"$`, blockingSSBMustBe)
+	ctx.Step(`^"([^"]*)" MUST NOT be identified as blocked by an external ScanSettingBinding$`, ssbMustNotBeIdentifiedAsBlocked)
+	ctx.Step(`^"([^"]*)" MUST NOT be treated as a source binding to import$`, ssbMustNotBeTreatedAsSourceBinding)
 }
 
 // --- Background steps (no-op in unit tests) ---
 
 // IMP-MAP-001 (background)
 func acsEndpointAndTokenPreflightSucceeded() error { return nil }
-func theImporterCanReadCOResources() error          { return nil }
+func theImporterCanReadCOResources() error         { return nil }
 
 // --- IMP-MAP-001: Use ScanSettingBinding name as scanName ---
 
@@ -1049,6 +1060,11 @@ func ssbReferencesScanSetting(ssbName, settingName string) error {
 }
 
 func theImporterProcessesAllBindings() error {
+	if mtc.adextMode {
+		// IMP-ADEXT-001, IMP-ADEXT-013
+		return processADEXTDetection()
+	}
+
 	// IMP-MAP-008..011
 	// Add a valid binding to ensure "other valid bindings" can be checked
 	validBinding := &validationBinding{
@@ -1127,236 +1143,111 @@ func otherBindingsMustStillBeProcessed() error {
 	return nil
 }
 
-// --- IMP-ADOPT-001..008: Adoption steps ---
+// NOTE: the IMP-ADOPT-001..008 "patch SSB settingsRef after create" step definitions were
+// retired along with the corresponding scenarios in 02-co-to-acs-mapping.feature. See
+// specs/08-adopt-external-ssb.feature (IMP-ADEXT-*) for the replacement workflow.
 
-func theSSBReferencesScanSetting(settingName string) error {
-	// IMP-ADOPT-001, IMP-ADOPT-002, IMP-ADOPT-003, IMP-ADOPT-004..006
+// --- IMP-ADEXT-001, IMP-ADEXT-013: Detect blocking external ScanSettingBindings ---
+
+// quotedStringRe extracts double-quoted tokens, e.g. from `"ocp4-cis", "ocp4-pci"`.
+var quotedStringRe = regexp.MustCompile(`"([^"]*)"`)
+
+func ssbInNamespaceReferencesProfilesList(name, namespace, profilesRaw string) error {
+	// IMP-ADEXT-001, IMP-ADEXT-013
+	mtc.adextMode = true
+	var profiles []models.ProfileRef
+	for _, m := range quotedStringRe.FindAllStringSubmatch(profilesRaw, -1) {
+		profiles = append(profiles, models.ProfileRef{Name: m[1], Kind: "Profile"})
+	}
+	mtc.ssb = &models.ScanSettingBinding{
+		Name:      name,
+		Namespace: namespace,
+		Profiles:  profiles,
+	}
+	return nil
+}
+
+func theSSBHasNoStackroxLabel() error {
+	// IMP-ADEXT-001
 	if mtc.ssb == nil {
-		return fmt.Errorf("SSB not set; call 'a ScanSettingBinding' step first")
+		return fmt.Errorf("no ScanSettingBinding set up yet")
 	}
-	mtc.ssb.ScanSettingName = settingName
-	// Track for adoption
-	mtc.adoptionSSBs = append(mtc.adoptionSSBs, &adoptionSSBState{
-		Context:        "default",
-		Namespace:      mtc.ssb.Namespace,
-		SSBName:        mtc.ssb.Name,
-		CurrentSetting: settingName,
-	})
+	mtc.ssb.Labels = nil
 	return nil
 }
 
-func importerCreatesACSConfig(configName string) error {
-	// IMP-ADOPT-001, IMP-ADOPT-002
-	mtc.adoptionConfName = configName
-	return nil
-}
-
-func acsCreatesScanSettingOnCluster(scanSettingName string) error {
-	// IMP-ADOPT-001, IMP-ADOPT-002
-	for _, as := range mtc.adoptionSSBs {
-		key := as.Context + "/" + as.Namespace + "/" + scanSettingName
-		mtc.adoptionK8s.scanSettings[key] = true
-		as.ScanSettingReady = true
+func theSSBHasStackroxLabel() error {
+	// IMP-ADEXT-013
+	if mtc.ssb == nil {
+		return fmt.Errorf("no ScanSettingBinding set up yet")
+	}
+	mtc.ssb.Labels = map[string]string{
+		adoptexternal.StackroxManagedLabelKey: adoptexternal.StackroxManagedLabelValue,
 	}
 	return nil
 }
 
-func acsHasNotCreatedScanSetting(scanSettingName string) error {
-	// IMP-ADOPT-004..006
-	// Don't add to fake K8s scanSettings — it won't be found during poll
-	_ = scanSettingName
+func noACSScanConfigurationNamedExists(name string) error {
+	// IMP-ADEXT-001: recorded for scenario context. The blocking conflict exists on the
+	// K8s side regardless of whether ACS already has a scan configuration with this name.
+	mtc.adextTargetScanName = name
 	return nil
 }
 
-func importerRunsAdoptionStep() error {
-	// IMP-ADOPT-001..008
-	var requests []adopt.AdoptionRequest
-	for _, as := range mtc.adoptionSSBs {
-		requests = append(requests, adopt.AdoptionRequest{
-			Context:        as.Context,
-			Namespace:      as.Namespace,
-			SSBName:        as.SSBName,
-			CurrentSetting: as.CurrentSetting,
-			TargetSetting:  mtc.adoptionConfName,
-		})
+// processADEXTDetection runs the detection logic from internal/adoptexternal against
+// the single SSB set up by the scenario's "Given" steps.
+// IMP-ADEXT-001, IMP-ADEXT-013
+func processADEXTDetection() error {
+	if mtc.ssb == nil {
+		return fmt.Errorf("no ScanSettingBinding set up yet")
 	}
-
-	result := adopt.RunAdoption(mtc.adoptionK8s, requests, 0) // 0 = no poll, immediate check
-	mtc.adoptionLogs = result.InfoLogs
-	mtc.adoptionWarnings = result.Warnings
-	mtc.adoptionExitErr = result.Err
+	clusterSSBs := []merge.ClusterSSB{{Context: "default", SSB: mtc.ssb}}
+	blockers := adoptexternal.DetectBlockers(clusterSSBs, mtc.ssb.Name)
+	if len(blockers) > 0 {
+		mtc.adextBlocked = true
+		mtc.adextBlockingSSB = blockers[0].SSB
+	}
+	mtc.adextSourceBindings = adoptexternal.FilterExternal([]models.ScanSettingBinding{*mtc.ssb})
 	return nil
 }
 
-func ssbSettingsRefMustBePatched(ssbName, expectedSetting string) error {
-	// IMP-ADOPT-001, IMP-ADOPT-002
-	for _, as := range mtc.adoptionSSBs {
-		if as.SSBName != ssbName {
-			continue
-		}
-		key := as.Context + "/" + as.Namespace + "/" + ssbName
-		patched, ok := mtc.adoptionK8s.patchedSSBs[key]
-		if !ok {
-			return fmt.Errorf("SSB %q was not patched", ssbName)
-		}
-		if patched != expectedSetting {
-			return fmt.Errorf("SSB %q patched to %q, expected %q", ssbName, patched, expectedSetting)
-		}
-		return nil
+func ssbMustBeIdentifiedAsBlocked(name string) error {
+	// IMP-ADEXT-001
+	if !mtc.adextBlocked {
+		return fmt.Errorf("expected %q to be identified as blocked by an external ScanSettingBinding, but it was not", name)
 	}
-	return fmt.Errorf("SSB %q not found in adoption state", ssbName)
-}
-
-func importerMustLogAdoptionInfo() error {
-	// IMP-ADOPT-001, IMP-ADOPT-002
-	if len(mtc.adoptionLogs) == 0 {
-		return fmt.Errorf("expected adoption info logs, but none recorded")
+	if mtc.adextBlockingSSB == nil || mtc.adextBlockingSSB.Name != name {
+		return fmt.Errorf("expected blocking ScanSettingBinding named %q, got %+v", name, mtc.adextBlockingSSB)
 	}
 	return nil
 }
 
-func ssbSettingsRefMustNotBeModified(ssbName string) error {
-	// IMP-ADOPT-003
-	for _, as := range mtc.adoptionSSBs {
-		if as.SSBName == ssbName {
-			key := as.Context + "/" + as.Namespace + "/" + ssbName
-			if _, ok := mtc.adoptionK8s.patchedSSBs[key]; ok {
-				return fmt.Errorf("SSB %q was modified, but should not have been", ssbName)
-			}
-			return nil
+func blockingSSBMustBe(name, namespace string) error {
+	// IMP-ADEXT-001
+	if mtc.adextBlockingSSB == nil {
+		return fmt.Errorf("no blocking ScanSettingBinding was recorded")
+	}
+	if mtc.adextBlockingSSB.Name != name || mtc.adextBlockingSSB.Namespace != namespace {
+		return fmt.Errorf("expected blocking ScanSettingBinding %s/%s, got %s/%s",
+			namespace, name, mtc.adextBlockingSSB.Namespace, mtc.adextBlockingSSB.Name)
+	}
+	return nil
+}
+
+func ssbMustNotBeIdentifiedAsBlocked(name string) error {
+	// IMP-ADEXT-013
+	if mtc.adextBlocked {
+		return fmt.Errorf("expected %q to NOT be identified as blocked by an external ScanSettingBinding, but it was (blocking SSB: %+v)", name, mtc.adextBlockingSSB)
+	}
+	return nil
+}
+
+func ssbMustNotBeTreatedAsSourceBinding(name string) error {
+	// IMP-ADEXT-013
+	for _, b := range mtc.adextSourceBindings {
+		if b.Name == name {
+			return fmt.Errorf("expected %q to NOT be treated as a source binding to import, but it was", name)
 		}
 	}
-	return fmt.Errorf("SSB %q not found in adoption state", ssbName)
-}
-
-func adoptionPollTimesOut(minSeconds int) error {
-	// IMP-ADOPT-004..006
-	// Run adoption with the specified minimum timeout
-	var requests []adopt.AdoptionRequest
-	for _, as := range mtc.adoptionSSBs {
-		requests = append(requests, adopt.AdoptionRequest{
-			Context:        as.Context,
-			Namespace:      as.Namespace,
-			SSBName:        as.SSBName,
-			CurrentSetting: as.CurrentSetting,
-			TargetSetting:  mtc.adoptionConfName,
-		})
-	}
-
-	timeout := time.Duration(minSeconds) * time.Second
-	start := time.Now()
-	result := adopt.RunAdoption(mtc.adoptionK8s, requests, timeout)
-	elapsed := time.Since(start)
-
-	if elapsed < timeout {
-		return fmt.Errorf("adoption poll returned after %v, expected at least %v", elapsed, timeout)
-	}
-
-	mtc.adoptionLogs = result.InfoLogs
-	mtc.adoptionWarnings = result.Warnings
-	mtc.adoptionExitErr = result.Err
 	return nil
-}
-
-func importerMustLogWarning() error {
-	// IMP-ADOPT-004..006
-	if len(mtc.adoptionWarnings) == 0 {
-		return fmt.Errorf("expected adoption warnings, but none recorded")
-	}
-	return nil
-}
-
-func ssbMustNotBeModified() error {
-	// IMP-ADOPT-004..006
-	if len(mtc.adoptionK8s.patchedSSBs) > 0 {
-		return fmt.Errorf("expected no SSBs to be patched, but %d were", len(mtc.adoptionK8s.patchedSSBs))
-	}
-	return nil
-}
-
-func importerMustNotExitWithError() error {
-	// IMP-ADOPT-004..006, IMP-ADOPT-008
-	if mtc.adoptionExitErr != nil {
-		return fmt.Errorf("expected no exit error, got: %w", mtc.adoptionExitErr)
-	}
-	return nil
-}
-
-// --- IMP-ADOPT-007: Multicluster adoption ---
-
-func kubecontextHasSSBReferencingScanSetting(ctxName, ssbName, settingName string) error {
-	// IMP-ADOPT-007, IMP-ADOPT-008
-	mtc.adoptionSSBs = append(mtc.adoptionSSBs, &adoptionSSBState{
-		Context:        ctxName,
-		Namespace:      "openshift-compliance",
-		SSBName:        ssbName,
-		CurrentSetting: settingName,
-	})
-	return nil
-}
-
-func importerCreatesConfigForBothClusters(configName string) error {
-	// IMP-ADOPT-007
-	mtc.adoptionConfName = configName
-	return nil
-}
-
-func acsCreatesScanSettingOnBothClusters(scanSettingName string) error {
-	// IMP-ADOPT-007
-	for _, as := range mtc.adoptionSSBs {
-		key := as.Context + "/" + as.Namespace + "/" + scanSettingName
-		mtc.adoptionK8s.scanSettings[key] = true
-		as.ScanSettingReady = true
-	}
-	return nil
-}
-
-func ssbOnCtxMustBePatched(ssbName, ctxLabel, expectedSetting string) error {
-	// IMP-ADOPT-007
-	ctxName := "ctx-" + ctxLabel
-	key := ctxName + "/openshift-compliance/" + ssbName
-	patched, ok := mtc.adoptionK8s.patchedSSBs[key]
-	if !ok {
-		return fmt.Errorf("SSB %q on %s was not patched", ssbName, ctxName)
-	}
-	if patched != expectedSetting {
-		return fmt.Errorf("SSB %q on %s patched to %q, expected %q", ssbName, ctxName, patched, expectedSetting)
-	}
-	return nil
-}
-
-func ssbOnCtxMustBePatchedSimple(ssbName, ctxLabel string) error {
-	// IMP-ADOPT-008
-	ctxName := "ctx-" + ctxLabel
-	key := ctxName + "/openshift-compliance/" + ssbName
-	if _, ok := mtc.adoptionK8s.patchedSSBs[key]; !ok {
-		return fmt.Errorf("SSB %q on %s was not patched", ssbName, ctxName)
-	}
-	return nil
-}
-
-func acsCreatesScanSettingOnOneCtx(scanSettingName, ctxLabelYes, ctxLabelNo string) error {
-	// IMP-ADOPT-008
-	ctxYes := "ctx-" + ctxLabelYes
-	for _, as := range mtc.adoptionSSBs {
-		if as.Context == ctxYes {
-			key := as.Context + "/" + as.Namespace + "/" + scanSettingName
-			mtc.adoptionK8s.scanSettings[key] = true
-			as.ScanSettingReady = true
-		}
-	}
-	// The ACS scan config name for adoption
-	mtc.adoptionConfName = scanSettingName
-	return nil
-}
-
-func importerMustWarnAboutCtxTimeout(ctxLabel string) error {
-	// IMP-ADOPT-008
-	ctxName := "ctx-" + ctxLabel
-	for _, w := range mtc.adoptionWarnings {
-		if strings.Contains(w, ctxName) {
-			return nil
-		}
-	}
-	return fmt.Errorf("expected warning about %s timeout, but none found in: %v", ctxName, mtc.adoptionWarnings)
 }

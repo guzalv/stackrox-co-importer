@@ -89,6 +89,9 @@ func (c *client) ListScanSettingBindings(ctx context.Context) ([]models.ScanSett
 		ssb := models.ScanSettingBinding{
 			Name:      item.GetName(),
 			Namespace: item.GetNamespace(),
+			// IMP-ADEXT-001, IMP-ADEXT-013: labels are needed to distinguish
+			// ACS-managed SSBs from external (e.g. GitOps-managed) ones.
+			Labels: item.GetLabels(),
 		}
 
 		// CO ScanSettingBinding has fields at top level (not under spec):
