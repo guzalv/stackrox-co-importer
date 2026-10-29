@@ -371,8 +371,24 @@ func (r *Runner) Run(ctx context.Context) int {
 	r.printSummary(totalDiscovered, createCount+updateCount, skipCount, failCount)
 
 	// Step 9: Return exit code
+	return exitCodeForRun(failCount, collector.All())
+}
+
+// exitCodeForRun decides the process exit code. A "gitops" problem (a scan
+// blocked by an external ScanSettingBinding, by default, by declining the
+// --delete-existing confirmation, or by GitOps self-heal reappearing it)
+// forces ExitPartialError even with zero failures: it's a routine report
+// condition, not a fatal error, but it means a requested import did not
+// happen, so it must not be indistinguishable from full success via exit
+// code alone. IMP-CLI-019
+func exitCodeForRun(failCount int, probs []problems.Problem) int {
 	if failCount > 0 {
 		return ExitPartialError
+	}
+	for _, p := range probs {
+		if p.Category == "gitops" {
+			return ExitPartialError
+		}
 	}
 	return ExitSuccess
 }
