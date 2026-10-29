@@ -140,6 +140,10 @@ Setting both `ROX_API_TOKEN` and `ROX_ADMIN_PASSWORD` is an error (ambiguous).
 | `--ca-cert-file`        |                        | Path to PEM CA certificate bundle.          |
 | `--insecure-skip-verify`| `false`                | Skip TLS certificate verification.          |
 | `--username`            | `admin`                | Username for basic auth mode.               |
+| `--delete-existing`     | `false`                | Delete externally-managed (e.g. GitOps) `ScanSettingBindings` that block a create, after confirmation. See [Adopting externally-managed ScanSettingBindings](#adopting-externally-managed-scansettingbindings). |
+| `--yes` / `-y`          | `false`                | Skip the confirmation prompt for `--delete-existing`. |
+| `--backup-dir <path>`   | `./co-importer-backup-<timestamp>` | Where backups and the resumable plan (`plan.json`) are written. Reusing a prior run's value resumes from it. |
+| `--settle-timeout`      | `5s`                   | How long to re-check a deleted `ScanSettingBinding` for GitOps self-heal before creating. |
 
 ### Exit codes
 
@@ -199,6 +203,74 @@ ACS credentials are not required.
 # List with --exclude filtering applied
 ./bin/compliance-operator-importer --list-ssbs --exclude "ocp4-.*"
 ```
+
+### Adopting externally-managed ScanSettingBindings
+
+RHACS 4.11+/5.0+ Central refuses to create (or update) a scan configuration
+whose profiles overlap an existing `ScanSettingBinding` on the target cluster
+that ACS doesn't manage itself (i.e. one without the
+`app.kubernetes.io/name: stackrox` label — typically one you authored directly
+or that's managed by a GitOps tool like Argo CD or Flux). Since the importer's
+whole job is to turn exactly such a binding into an ACS scan config, **every
+create is blocked by this check unless the binding is removed first.**
+
+By default, the importer never touches that binding. It reports the conflict
+clearly and skips:
+
+```bash
+./bin/compliance-operator-importer
+# ...
+#   [WARN] skipped "cis-weekly": blocked by external ScanSettingBinding(s); see problems for remediation
+```
+
+The `problems[]` entry (category `gitops`) names the blocking binding(s) and
+how to proceed. You have two options:
+
+**Option 1 — let the importer remove it, with confirmation:**
+
+```bash
+./bin/compliance-operator-importer --delete-existing
+# Delete external ScanSettingBinding(s) openshift-compliance/cis-weekly (context my-cluster)
+# blocking ACS scan configuration "cis-weekly"? [y/N]
+```
+
+Add `--yes` to skip the interactive prompt (required for non-interactive use —
+the importer refuses `--delete-existing` without `--yes` when stdin isn't a
+terminal). Before deleting anything, the importer writes a full YAML backup of
+every binding (and its referenced `ScanSetting`) it's about to delete, plus a
+resumable plan, to `--backup-dir` (default: a timestamped directory in the
+current working directory).
+
+**Option 2 — remove it yourself** (e.g. delete it from your GitOps source and
+let the tool prune it, or `oc delete` it directly), then re-run the importer
+with no extra flags. Since a plain run already wrote the backup/plan on its
+first pass, re-running **resumes from that plan** instead of needing to
+re-discover the binding (which is gone by then) — just point `--backup-dir` at
+the same directory used the first time (or don't move it: the default path is
+stable for as long as you keep reusing it).
+
+**If your binding is managed by a GitOps tool with self-healing enabled**
+(Argo CD `selfHeal: true`, Flux, etc.), you **must pause its reconciliation
+for that resource first** — deleting a binding a GitOps tool actively
+reconciles only wins a race the tool usually wins back in about a second. The
+importer guards against this: after deleting, it re-checks for
+`--settle-timeout` (default `5s`) to see whether the binding reappeared. If it
+does, the create is skipped with a `gitops` problem telling you to pause
+reconciliation and re-run — but this is a safety net against *forgetting*, not
+a sanctioned way to skip pausing it. A GitOps tool with a slower reconcile
+loop can still recreate the old binding minutes later, after ACS has already
+created its own; the only reliable fix is pausing reconciliation for that
+resource before running `--delete-existing`. The importer has no
+GitOps-tool-specific integration by design — this is a manual prerequisite,
+not something it automates for you.
+
+Once adopted, ACS/Sensor creates its own `ScanSetting`+`ScanSettingBinding`
+(labeled `app.kubernetes.io/name: stackrox`) reusing the same name. The
+importer never processes stackrox-labeled bindings as import sources, so a
+re-run correctly sees nothing left to do for it. The original `ScanSetting`
+the deleted binding referenced is left in place (it may be shared by other
+bindings) — the importer flags it as a `problems[]` entry with category
+`orphan` so you can decide whether to clean it up.
 
 ### JSON report
 
