@@ -29,10 +29,11 @@ const (
 )
 
 const (
-	defaultTimeout     = 30 * time.Second
-	defaultMaxRetries  = 5
-	defaultCONamespace = "openshift-compliance"
-	defaultUsername     = "admin"
+	defaultTimeout       = 30 * time.Second
+	defaultMaxRetries    = 5
+	defaultCONamespace   = "openshift-compliance"
+	defaultUsername      = "admin"
+	defaultSettleTimeout = 5 * time.Second
 )
 
 // Config holds all resolved configuration for a run.
@@ -56,6 +57,15 @@ type Config struct {
 	ExcludePatterns []string
 	// IMP-CLI-029: list SSBs and exit without importing.
 	ListSSBs bool
+	// IMP-CLI-030: delete blocking external ScanSettingBindings instead of skipping.
+	DeleteExisting bool
+	// IMP-CLI-031: skip the interactive confirmation prompt for --delete-existing.
+	ConfirmYes bool
+	// IMP-CLI-032: directory for backups of deleted resources and the resumable plan.
+	BackupDir string
+	// IMP-CLI-033: re-poll duration after a blocking external SSB is observed
+	// gone, to detect GitOps self-healing before creating the scan config.
+	SettleTimeout time.Duration
 	// Warnings collects non-fatal configuration notices (e.g. overlapping auth vars).
 	Warnings []string
 }
@@ -64,10 +74,16 @@ type Config struct {
 // Used to decouple from os.Getenv for testability.
 type envFunc func(string) string
 
+// ttyFunc is the type for a function that reports whether stdin is an
+// interactive terminal. Used to decouple from a real TTY check for
+// testability (IMP-CLI-034).
+type ttyFunc func() bool
+
 // Parse creates a Config from command-line args and environment variables.
 // The env parameter is a lookup function (typically os.Getenv) so tests can
-// supply their own values without mutating process state.
-func Parse(args []string, getenv envFunc) (*Config, error) {
+// supply their own values without mutating process state. The stdinIsTTY
+// parameter reports whether stdin is an interactive terminal (IMP-CLI-034).
+func Parse(args []string, getenv envFunc, stdinIsTTY ttyFunc) (*Config, error) {
 	fs := flag.NewFlagSet("co-importer", flag.ContinueOnError)
 
 	// IMP-CLI-001: endpoint from flag or env var
@@ -125,6 +141,25 @@ func Parse(args []string, getenv envFunc) (*Config, error) {
 	listSSBs := fs.Bool("list-ssbs", false,
 		"List discovered SSBs and exit (no import)")
 
+	// IMP-CLI-030: delete-existing mode
+	deleteExisting := fs.Bool("delete-existing", false,
+		"Delete blocking external ScanSettingBindings after confirmation")
+
+	// IMP-CLI-031: confirm-yes, skips the interactive confirmation prompt
+	confirmYes := fs.BoolP("yes", "y", false,
+		"Skip the interactive confirmation prompt (used with --delete-existing)")
+
+	// IMP-CLI-032: backup-dir. Default is empty here (sentinel); when the
+	// flag is not explicitly set, Parse fills in a timestamped default below.
+	backupDir := fs.String("backup-dir", "",
+		"Directory for resource backups and the resumable plan "+
+			"(default \"./co-importer-backup-<timestamp>\")")
+
+	// IMP-CLI-033: settle timeout
+	settleTimeout := fs.Duration("settle-timeout", defaultSettleTimeout,
+		"Re-poll duration after a blocking external SSB is observed gone, "+
+			"to detect GitOps self-healing before creating the scan config")
+
 	if err := fs.Parse(args); err != nil {
 		return nil, fmt.Errorf("flag parse error: %w", err)
 	}
@@ -149,10 +184,19 @@ func Parse(args []string, getenv envFunc) (*Config, error) {
 		MaxRetries:         *maxRetries,
 		CACertFile:         *caCertFile,
 		InsecureSkipVerify: *insecureSkipVerify,
-		Contexts:        *contexts,
-		ReportJSON:      *reportJSON,
-		ExcludePatterns: *excludePatterns,
-		ListSSBs:        *listSSBs,
+		Contexts:           *contexts,
+		ReportJSON:         *reportJSON,
+		ExcludePatterns:    *excludePatterns,
+		ListSSBs:           *listSSBs,
+		DeleteExisting:     *deleteExisting,
+		ConfirmYes:         *confirmYes,
+		BackupDir:          *backupDir,
+		SettleTimeout:      *settleTimeout,
+	}
+
+	// IMP-CLI-032: default to a timestamped directory when --backup-dir is not given.
+	if cfg.BackupDir == "" {
+		cfg.BackupDir = defaultBackupDir()
 	}
 
 	// IMP-CLI-029: --list-ssbs does not contact ACS; skip auth validation entirely.
@@ -164,11 +208,19 @@ func Parse(args []string, getenv envFunc) (*Config, error) {
 	}
 
 	// Validate cross-field invariants
-	if err := validate(cfg); err != nil {
+	if err := validate(cfg, stdinIsTTY); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+// IMP-CLI-032: defaultBackupDir returns a timestamped backup directory path,
+// relative to the current working directory. The timestamp uses a
+// filesystem-safe variant of RFC3339 (colons replaced with dashes, no
+// punctuation separators) so the path works unmodified on all platforms.
+func defaultBackupDir() string {
+	return "co-importer-backup-" + time.Now().UTC().Format("20060102T150405Z")
 }
 
 // inferAuthMode sets cfg.AuthMode based on which env vars are present.
@@ -204,7 +256,7 @@ func inferAuthMode(cfg *Config, getenv envFunc) error {
 }
 
 // validate checks cross-field invariants after flags and env vars are resolved.
-func validate(cfg *Config) error {
+func validate(cfg *Config, stdinIsTTY ttyFunc) error {
 	// IMP-CLI-001: endpoint required
 	if cfg.Endpoint == "" {
 		return errors.New("--endpoint is required (or set ROX_ENDPOINT)")
@@ -251,6 +303,16 @@ func validate(cfg *Config) error {
 		if _, err := regexp.Compile(p); err != nil {
 			return fmt.Errorf("invalid --exclude regex %q: %w", p, err)
 		}
+	}
+
+	// IMP-CLI-034: --delete-existing without --yes needs an interactive
+	// terminal to show the confirmation prompt. Fail fast when stdin is not
+	// a TTY, since the prompt cannot be shown non-interactively.
+	if cfg.DeleteExisting && !cfg.ConfirmYes && !stdinIsTTY() {
+		return errors.New(
+			"--delete-existing requires --yes when stdin is not a TTY " +
+				"(no interactive terminal available to confirm the deletion)",
+		)
 	}
 
 	return nil

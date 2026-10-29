@@ -2,6 +2,7 @@ package features
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,10 +15,18 @@ type configTestCtx struct {
 	env map[string]string // only explicitly set vars; unset keys return ""
 	cfg *config.Config
 	err error
+	// stdinIsTTY defaults to true (interactive) unless a scenario sets up
+	// a non-interactive stdin via the "stdin is not a TTY" step
+	// (IMP-CLI-034).
+	stdinIsTTY bool
 }
 
 func (c *configTestCtx) mockEnv(key string) string {
 	return c.env[key]
+}
+
+func (c *configTestCtx) mockStdinIsTTY() bool {
+	return c.stdinIsTTY
 }
 
 func (c *configTestCtx) envVarIs(key, value string) {
@@ -25,12 +34,12 @@ func (c *configTestCtx) envVarIs(key, value string) {
 }
 
 func (c *configTestCtx) parseConfigNoFlags() {
-	c.cfg, c.err = config.Parse(nil, c.mockEnv)
+	c.cfg, c.err = config.Parse(nil, c.mockEnv, c.mockStdinIsTTY)
 }
 
 func (c *configTestCtx) parseConfigWithFlags(flagsStr string) {
 	args := strings.Fields(flagsStr)
-	c.cfg, c.err = config.Parse(args, c.mockEnv)
+	c.cfg, c.err = config.Parse(args, c.mockEnv, c.mockStdinIsTTY)
 }
 
 func (c *configTestCtx) configParsingSuceeds() error {
@@ -191,6 +200,20 @@ func (c *configTestCtx) theRequestTimeoutIs(want string) error {
 	return nil
 }
 
+func (c *configTestCtx) theSettleTimeoutIs(want string) error {
+	if c.cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	d, err := time.ParseDuration(want)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q in step: %w", want, err)
+	}
+	if c.cfg.SettleTimeout != d {
+		return fmt.Errorf("settle timeout: got %v, want %v", c.cfg.SettleTimeout, d)
+	}
+	return nil
+}
+
 func (c *configTestCtx) maxRetriesIs(want int) error {
 	if c.cfg == nil {
 		return fmt.Errorf("config is nil")
@@ -289,6 +312,90 @@ func (c *configTestCtx) listssbsIsDisabled() error {
 	return nil
 }
 
+// IMP-CLI-030: deleteExistingIsEnabled checks that DeleteExisting is true.
+func (c *configTestCtx) deleteExistingIsEnabled() error {
+	if c.cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if !c.cfg.DeleteExisting {
+		return fmt.Errorf("DeleteExisting: got false, want true")
+	}
+	return nil
+}
+
+// IMP-CLI-030: deleteExistingIsDisabled checks that DeleteExisting is false.
+func (c *configTestCtx) deleteExistingIsDisabled() error {
+	if c.cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if c.cfg.DeleteExisting {
+		return fmt.Errorf("DeleteExisting: got true, want false")
+	}
+	return nil
+}
+
+// IMP-CLI-031: confirmYesIsEnabled checks that ConfirmYes is true.
+func (c *configTestCtx) confirmYesIsEnabled() error {
+	if c.cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if !c.cfg.ConfirmYes {
+		return fmt.Errorf("ConfirmYes: got false, want true")
+	}
+	return nil
+}
+
+// IMP-CLI-031: confirmYesIsDisabled checks that ConfirmYes is false.
+func (c *configTestCtx) confirmYesIsDisabled() error {
+	if c.cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if c.cfg.ConfirmYes {
+		return fmt.Errorf("ConfirmYes: got true, want false")
+	}
+	return nil
+}
+
+// IMP-CLI-032: theBackupDirIs checks BackupDir against an exact expected value.
+func (c *configTestCtx) theBackupDirIs(want string) error {
+	if c.cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if c.cfg.BackupDir != want {
+		return fmt.Errorf("BackupDir: got %q, want %q", c.cfg.BackupDir, want)
+	}
+	return nil
+}
+
+// IMP-CLI-032: theBackupDirMatchesPattern checks BackupDir against a regex pattern.
+func (c *configTestCtx) theBackupDirMatchesPattern(pattern string) error {
+	if c.cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return fmt.Errorf("invalid pattern %q in step: %w", pattern, err)
+	}
+	if !re.MatchString(c.cfg.BackupDir) {
+		return fmt.Errorf("BackupDir %q does not match pattern %q", c.cfg.BackupDir, pattern)
+	}
+	return nil
+}
+
+// stdinIsATTY sets up the scenario precondition that stdin is an
+// interactive terminal (IMP-CLI-034).
+func (c *configTestCtx) stdinIsATTY() error {
+	c.stdinIsTTY = true
+	return nil
+}
+
+// stdinIsNotATTY sets up the scenario precondition that stdin is not an
+// interactive terminal, e.g. piped or redirected input (IMP-CLI-034).
+func (c *configTestCtx) stdinIsNotATTY() error {
+	c.stdinIsTTY = false
+	return nil
+}
+
 // exitCodeIs checks the named exit code constant value.
 // IMP-CLI-017, IMP-CLI-018, IMP-CLI-019
 func exitCodeIs(name string, want int) error {
@@ -312,6 +419,10 @@ func exitCodeIs(name string, want int) error {
 func registerConfigSteps(ctx *godog.ScenarioContext) {
 	c := &configTestCtx{
 		env: make(map[string]string),
+		// IMP-CLI-034: default to interactive stdin unless a scenario says
+		// otherwise, so existing scenarios that don't mention stdin keep
+		// their current behavior.
+		stdinIsTTY: true,
 	}
 
 	ctx.Step(`^env var "([^"]*)" is "([^"]*)"$`, c.envVarIs)
@@ -333,6 +444,7 @@ func registerConfigSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^dry-run is enabled$`, c.dryRunIsEnabled)
 	ctx.Step(`^dry-run is disabled$`, c.dryRunIsDisabled)
 	ctx.Step(`^the request timeout is "([^"]*)"$`, c.theRequestTimeoutIs)
+	ctx.Step(`^the settle timeout is "([^"]*)"$`, c.theSettleTimeoutIs)
 	ctx.Step(`^max retries is (\d+)$`, c.maxRetriesIs)
 	ctx.Step(`^the CA cert file is "([^"]*)"$`, c.theCACertFileIs)
 	ctx.Step(`^insecure-skip-verify is enabled$`, c.insecureSkipVerifyIsEnabled)
@@ -343,4 +455,12 @@ func registerConfigSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the exclude patterns are "([^"]*)"$`, c.theExcludePatternsAre)
 	ctx.Step(`^list-ssbs is enabled$`, c.listssbsIsEnabled)
 	ctx.Step(`^list-ssbs is disabled$`, c.listssbsIsDisabled)
+	ctx.Step(`^delete-existing is enabled$`, c.deleteExistingIsEnabled)
+	ctx.Step(`^delete-existing is disabled$`, c.deleteExistingIsDisabled)
+	ctx.Step(`^confirm-yes is enabled$`, c.confirmYesIsEnabled)
+	ctx.Step(`^confirm-yes is disabled$`, c.confirmYesIsDisabled)
+	ctx.Step(`^the backup dir is "([^"]*)"$`, c.theBackupDirIs)
+	ctx.Step(`^the backup dir matches pattern "([^"]*)"$`, c.theBackupDirMatchesPattern)
+	ctx.Step(`^stdin is a TTY$`, c.stdinIsATTY)
+	ctx.Step(`^stdin is not a TTY$`, c.stdinIsNotATTY)
 }

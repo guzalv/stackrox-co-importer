@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/signal"
 
+	"golang.org/x/term"
+
 	"github.com/stackrox/co-importer/internal/acs"
 	"github.com/stackrox/co-importer/internal/config"
 	"github.com/stackrox/co-importer/internal/run"
@@ -31,7 +33,9 @@ func runMain() int {
 	printer := status.New()
 
 	// Parse configuration from CLI args and environment.
-	cfg, err := config.Parse(os.Args[1:], os.Getenv)
+	// IMP-CLI-034: stdinIsTTY reports whether stdin is an interactive terminal.
+	stdinIsTTY := func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	cfg, err := config.Parse(os.Args[1:], os.Getenv, stdinIsTTY)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return config.ExitConfigError
