@@ -239,6 +239,115 @@ func listACSConfigs(t *testing.T) []acsScanConfig {
 	return resp.Configurations
 }
 
+// acsCluster is a subset of the ACS cluster list response.
+type acsCluster struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// decoyClusterName returns a registered ACS cluster name that is NOT the
+// cluster under test (CO_CLUSTER_NAME/"ga-ocp-cron-2" by default). Creating
+// a scan config targeting this cluster satisfies "ACS already has this
+// scanName" for the reconcile pre-list, WITHOUT Sensor on the cluster under
+// test ever being asked to materialize anything for it (see
+// TestIMP_ACC_006_SkipExistingWithoutOverwrite's comment for why that
+// matters: Sensor immediately replaces any ScanSettingBinding of that exact
+// name with its own labeled version on any cluster a scan config targets).
+func decoyClusterName(t *testing.T) string {
+	t.Helper()
+	if v := os.Getenv("CO_DECOY_CLUSTER_NAME"); v != "" {
+		return v
+	}
+	return "ga-ocp-cron"
+}
+
+// resolveClusterID looks up the ACS cluster ID for clusterName via the ACS
+// API. Used by createACSConfigDirect, which (unlike the importer) has no
+// auto-discovery of its own.
+func resolveClusterID(t *testing.T, clusterName string) string {
+	t.Helper()
+	body := acsAPIGet(t, "/v1/clusters")
+	var resp struct {
+		Clusters []acsCluster `json:"clusters"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("parsing ACS cluster list: %v", err)
+	}
+	for _, c := range resp.Clusters {
+		if c.Name == clusterName {
+			return c.ID
+		}
+	}
+	t.Fatalf("ACS cluster named %q not found", clusterName)
+	return ""
+}
+
+// createACSConfigDirect creates an ACS scan configuration directly via the
+// API (bypassing the importer binary and its adopt-external workflow), so
+// tests can set up an "already exists in ACS" precondition independent of
+// the CO-side ScanSettingBinding's label/adoption state (IMP-ACC-006,
+// IMP-ACC-014). Returns the created config's ID.
+func createACSConfigDirect(t *testing.T, scanName string, profiles []string, clusterID string) string {
+	t.Helper()
+	endpoint := requireEnv(t, "ROX_ENDPOINT")
+
+	payload := map[string]interface{}{
+		"scanName": scanName,
+		"scanConfig": map[string]interface{}{
+			"oneTimeScan": false,
+			"profiles":    profiles,
+			"scanSchedule": map[string]interface{}{
+				"intervalType": "DAILY",
+				"hour":         2,
+				"minute":       0,
+			},
+			"description": "created directly via API for e2e test",
+		},
+		"clusters": []string{clusterID},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshalling ACS create payload: %v", err)
+	}
+
+	url := strings.TrimRight(endpoint, "/") + "/v2/compliance/scan/configurations"
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	setAuth(t, req)
+
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		t.Fatalf("ACS API POST scan configurations: %v", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ACS API POST scan configurations returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var created acsScanConfig
+	if err := json.Unmarshal(respBody, &created); err != nil {
+		t.Fatalf("parsing create response: %v", err)
+	}
+	return created.ID
+}
+
+// getSSB returns the raw kubectl get output for a ScanSettingBinding, or ""
+// if it doesn't exist. Used to assert a binding was NOT modified.
+func getSSB(t *testing.T, namespace, name string) string {
+	t.Helper()
+	cmd := exec.Command("kubectl", "get", "scansettingbindings.compliance.openshift.io", name,
+		"-n", namespace, "-o", "yaml")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
 // parseReport reads and parses a JSON report file.
 func parseReport(t *testing.T, path string) report {
 	t.Helper()
@@ -465,9 +574,10 @@ func TestIMP_ACC_003_DryRunNoWrites(t *testing.T) {
 
 	_, _, exitCode := runImporter(t, args...)
 
-	// Exit code must be 0 (success) or 2 (partial).
-	if exitCode != 0 && exitCode != 2 {
-		t.Fatalf("expected exit code 0 or 2, got %d", exitCode)
+	// Dry-run never records a "gitops" problem (IMP-ADEXT-014), so exit code
+	// must be 0.
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
 
 	// Report file must exist and be valid JSON.
@@ -518,9 +628,10 @@ func TestIMP_ACC_004_ApplyCreatesConfigs(t *testing.T) {
 	ssName := "e2e-ss-" + id
 	ssbName := "e2e-apply-" + id
 
-	// IMP-ACC-018: create own CO resources.
+	// IMP-ACC-018: create own CO resources. Uses a profile not already
+	// claimed by another scan config on this shared cluster (IMP-ACC-021).
 	createScanSetting(t, ns, ssName, "0 2 * * *")
-	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-cis"})
+	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-pci-dss"})
 
 	// IMP-ACC-020: clean up ALL resources via t.Cleanup, even on failure.
 	t.Cleanup(func() {
@@ -530,14 +641,24 @@ func TestIMP_ACC_004_ApplyCreatesConfigs(t *testing.T) {
 	})
 
 	reportPath := filepath.Join(t.TempDir(), "apply-report.json")
+	// IMP-ACC-028: a freshly-authored SSB has no stackrox label, so RHACS
+	// >=4.11/5.0 blocks its own create by construction; --delete-existing
+	// --yes resolves the (uncontested, no-GitOps-involved) blocker so this
+	// test can exercise the actual create path (IMP-ACC-029).
+	// --backup-dir is pinned to a temp dir so the default (CWD-relative,
+	// timestamped) path never litters the working directory.
 	args := append(commonArgs(t),
+		"--delete-existing", "--yes",
+		"--backup-dir", filepath.Join(t.TempDir(), "backup"),
 		"--report-json", reportPath,
 	)
 
+	// No GitOps tool is involved here, so the blocking SSB can't reappear:
+	// expect a clean success.
 	stdout, stderr, exitCode := runImporter(t, args...)
 
-	if exitCode != 0 && exitCode != 2 {
-		t.Fatalf("expected exit code 0 or 2, got %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
 	}
 
 	r := parseReport(t, reportPath)
@@ -586,9 +707,10 @@ func TestIMP_ACC_005_SecondRunIdempotent(t *testing.T) {
 	ssName := "e2e-ss-" + id
 	ssbName := "e2e-idem-" + id
 
-	// IMP-ACC-018: create own CO resources.
+	// IMP-ACC-018: create own CO resources. Uses a profile not already
+	// claimed by another scan config on this shared cluster (IMP-ACC-021).
 	createScanSetting(t, ns, ssName, "0 2 * * *")
-	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-cis"})
+	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-pci-dss"})
 
 	// IMP-ACC-020: clean up ALL resources via t.Cleanup, even on failure.
 	t.Cleanup(func() {
@@ -597,38 +719,51 @@ func TestIMP_ACC_005_SecondRunIdempotent(t *testing.T) {
 		cleanupACSConfigByName(t, ssbName)
 	})
 
-	// First run: apply.
+	// First run: apply. IMP-ACC-028/029: needs --delete-existing --yes to
+	// actually create (see TestIMP_ACC_004_ApplyCreatesConfigs).
+	// --backup-dir is pinned to a temp dir (see TestIMP_ACC_004).
 	reportPath1 := filepath.Join(t.TempDir(), "first-run.json")
-	firstArgs := append(commonArgs(t), "--report-json", reportPath1)
+	firstArgs := append(commonArgs(t),
+		"--delete-existing", "--yes",
+		"--backup-dir", filepath.Join(t.TempDir(), "backup"),
+		"--report-json", reportPath1,
+	)
 
+	// No GitOps tool is involved here, so the blocking SSB can't reappear:
+	// expect a clean success.
 	_, _, exitCode := runImporter(t, firstArgs...)
-	if exitCode != 0 && exitCode != 2 {
-		t.Fatalf("first run: expected exit code 0 or 2, got %d", exitCode)
+	if exitCode != 0 {
+		t.Fatalf("first run: expected exit code 0, got %d", exitCode)
 	}
 
 	// Snapshot configs after first run.
 	configsAfterFirst := listACSConfigs(t)
 
-	// Second run: apply again.
+	// Second run: apply again, no extra flags. IMP-ADEXT-013: the source SSB
+	// is now stackrox-labeled (ACS/Sensor materialized its own after the
+	// first run), so it's excluded from discovery entirely — it may not
+	// appear in items[] at all, which is the correct steady state once
+	// adopted, not a bug. The idempotency guarantee this test actually
+	// verifies is "zero new creates, zero net change in ACS".
 	reportPath2 := filepath.Join(t.TempDir(), "second-run.json")
 	secondArgs := append(commonArgs(t), "--report-json", reportPath2)
 
 	_, _, exitCode = runImporter(t, secondArgs...)
-	if exitCode != 0 && exitCode != 2 {
-		t.Fatalf("second run: expected exit code 0 or 2, got %d", exitCode)
+	if exitCode != 0 {
+		t.Fatalf("second run: expected exit code 0, got %d", exitCode)
 	}
 
 	r := parseReport(t, reportPath2)
 
-	// Second run should have no new creates — everything should be skipped.
+	// Second run should have no new creates — everything should be skipped
+	// (or no longer discovered at all, per the note above).
 	if r.Counts.Create != 0 {
 		t.Errorf("second run created %d configs — expected 0 (idempotent)", r.Counts.Create)
 	}
 
-	// Our SSB should show action=skip on the second run.
 	for _, item := range r.Items {
 		if item.Source.BindingName == ssbName && item.Action == "create" {
-			t.Errorf("second run has action=create for %q — expected skip", ssbName)
+			t.Errorf("second run has action=create for %q — expected skip or no entry", ssbName)
 		}
 	}
 
@@ -646,54 +781,76 @@ func TestIMP_ACC_005_SecondRunIdempotent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // IMP-ACC-006
+//
+// Tests the "ACS already has this scanName" skip path in isolation from the
+// adopt-external workflow: the ACS scan config is created directly via the
+// API (not through the importer), while the matching CO ScanSettingBinding
+// stays external (unadopted, no stackrox label). The importer's internal
+// dry-run "peek" at the reconcile outcome finds the scanName already exists
+// and returns skip immediately — this run must never touch the external
+// ScanSettingBinding, since no write to ACS is needed for it at all.
 func TestIMP_ACC_006_SkipExistingWithoutOverwrite(t *testing.T) {
 	id := runID()
 	ns := coNamespace(t)
-	ssName := "e2e-ss-" + id
 	ssbName := "e2e-exist-" + id
 
-	// IMP-ACC-018: create own CO resources.
-	createScanSetting(t, ns, ssName, "0 2 * * *")
-	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-cis"})
-
-	// IMP-ACC-020: clean up ALL resources via t.Cleanup, even on failure.
+	// Target the ACS config at a DIFFERENT registered cluster (not the one
+	// under test): Sensor on the cluster under test would otherwise
+	// immediately materialize its own labeled ScanSettingBinding the moment
+	// a scan config exists targeting it, overwriting the plain external one
+	// this test creates below before the importer ever runs. Pointing the
+	// config elsewhere still satisfies "ACS already has this scanName" for
+	// the importer's pre-list check (which doesn't look at target
+	// clusters), without Sensor on the cluster under test ever being
+	// involved. Uses a profile not already claimed by other scan configs on
+	// this shared cluster (IMP-ACC-021 test isolation).
+	clusterID := resolveClusterID(t, decoyClusterName(t))
+	acsID := createACSConfigDirect(t, ssbName, []string{"ocp4-moderate"}, clusterID)
 	t.Cleanup(func() {
-		deleteResource(t, ns, "scansettingbindings", ssbName)
-		deleteResource(t, ns, "scansettings", ssName)
-		cleanupACSConfigByName(t, ssbName)
+		deleteACSConfig(t, acsID)
 	})
 
-	// First run: create the ACS config.
-	setupReport := filepath.Join(t.TempDir(), "setup.json")
-	setupArgs := append(commonArgs(t), "--report-json", setupReport)
-	runImporter(t, setupArgs...)
+	createScanSettingBinding(t, ns, ssbName, "default", []string{"ocp4-moderate"})
+	ssbBefore := getSSB(t, ns, ssbName)
+	// IMP-ACC-020: register cleanup for the SSB immediately, before any call
+	// that might fail/t.Fatalf, so it's never leaked on a failure.
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", ssbName)
+	})
 
-	// Second run: without --overwrite-existing (default create-only mode).
 	reportPath := filepath.Join(t.TempDir(), "skip-existing.json")
-	secondArgs := append(commonArgs(t), "--report-json", reportPath)
+	args := append(commonArgs(t), "--report-json", reportPath)
 
-	_, _, exitCode := runImporter(t, secondArgs...)
-	if exitCode != 0 && exitCode != 2 {
-		t.Fatalf("expected exit code 0 or 2, got %d", exitCode)
+	// A plain "already exists" skip is a "conflict" problem, not "gitops",
+	// so IMP-CLI-019's gitops-forces-exit-2 rule does not apply here.
+	_, _, exitCode := runImporter(t, args...)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
 
 	r := parseReport(t, reportPath)
 
-	// Mode should be create-only.
 	if r.Meta.Mode != "create-only" {
 		t.Errorf("expected mode=create-only, got %q", r.Meta.Mode)
 	}
 
-	// Existing configs should be skipped.
-	if r.Counts.Skip == 0 && r.Counts.Discovered > 0 {
+	foundSkip := false
+	for _, item := range r.Items {
+		if item.Source.BindingName == ssbName {
+			if item.Action != "skip" {
+				t.Errorf("expected action=skip for %q, got %q", ssbName, item.Action)
+			}
+			foundSkip = true
+		}
+	}
+	if !foundSkip {
 		reportJSON, _ := json.MarshalIndent(r, "", "  ")
-		t.Errorf("expected at least one skip for existing configs, got 0\nreport: %s", reportJSON)
+		t.Fatalf("expected an item for %q with action=skip, found none\nreport: %s", ssbName, reportJSON)
 	}
 
-	// problems[] should contain conflict entries for skipped configs.
 	hasConflict := false
 	for _, p := range r.Problems {
-		if p.Category == "conflict" {
+		if p.ResourceRef == ssbName && p.Category == "conflict" {
 			hasConflict = true
 			if p.Description == "" {
 				t.Error("conflict problem has empty description")
@@ -703,66 +860,83 @@ func TestIMP_ACC_006_SkipExistingWithoutOverwrite(t *testing.T) {
 			}
 		}
 	}
-	if r.Counts.Skip > 0 && !hasConflict {
-		t.Error("skipped existing configs but no conflict entries found in problems[]")
+	if !hasConflict {
+		t.Error("expected a conflict-category problem for the skipped config")
+	}
+
+	// The whole point: since no write was needed, the external
+	// ScanSettingBinding must never have been touched.
+	ssbAfter := getSSB(t, ns, ssbName)
+	if ssbAfter == "" {
+		t.Error("ScanSettingBinding was deleted — it should never be touched when ACS already has the scanName and --overwrite-existing is not set")
+	} else if ssbAfter != ssbBefore {
+		t.Error("ScanSettingBinding was modified — it should never be touched when ACS already has the scanName and --overwrite-existing is not set")
 	}
 }
 
 // IMP-ACC-014
+//
+// With --overwrite-existing, a write (PUT) IS needed, so the external
+// ScanSettingBinding becomes a genuine blocker again (RHACS's conflict check
+// applies to updates too, not just creates) — --delete-existing --yes is
+// required for the update to succeed.
 func TestIMP_ACC_014_OverwriteExistingUpdates(t *testing.T) {
 	id := runID()
 	ns := coNamespace(t)
-	ssName := "e2e-ss-" + id
 	ssbName := "e2e-exist-" + id
 
-	// IMP-ACC-018: create own CO resources.
-	createScanSetting(t, ns, ssName, "0 2 * * *")
-	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-cis"})
-
-	// IMP-ACC-020: clean up ALL resources via t.Cleanup, even on failure.
+	// Target the decoy cluster for the same reason as TestIMP_ACC_006: avoid
+	// Sensor on the cluster under test materializing its own
+	// ScanSettingBinding before this test creates a plain external one. Once
+	// the importer's own --overwrite-existing update runs below, it
+	// legitimately re-targets the config at the cluster under test, and
+	// Sensor materializing its own ScanSettingBinding there at that point is
+	// the correct, expected outcome.
+	clusterID := resolveClusterID(t, decoyClusterName(t))
+	createACSConfigDirect(t, ssbName, []string{"ocp4-moderate"}, clusterID)
+	// IMP-ACC-020: register cleanup immediately, before any fallible call.
 	t.Cleanup(func() {
-		deleteResource(t, ns, "scansettingbindings", ssbName)
-		deleteResource(t, ns, "scansettings", ssName)
 		cleanupACSConfigByName(t, ssbName)
 	})
 
-	// First run: create the ACS config.
-	setupReport := filepath.Join(t.TempDir(), "setup.json")
-	setupArgs := append(commonArgs(t), "--report-json", setupReport)
-	runImporter(t, setupArgs...)
+	createScanSettingBinding(t, ns, ssbName, "default", []string{"ocp4-moderate"})
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", ssbName)
+	})
 
-	// Second run: with --overwrite-existing.
 	reportPath := filepath.Join(t.TempDir(), "overwrite.json")
-	overwriteArgs := append(commonArgs(t),
-		"--overwrite-existing",
+	args := append(commonArgs(t),
+		"--overwrite-existing", "--delete-existing", "--yes",
+		"--backup-dir", filepath.Join(t.TempDir(), "backup"),
 		"--report-json", reportPath,
 	)
 
-	_, _, exitCode := runImporter(t, overwriteArgs...)
-	if exitCode != 0 && exitCode != 2 {
-		t.Fatalf("expected exit code 0 or 2, got %d", exitCode)
+	// No GitOps tool is involved here, so the blocking SSB can't reappear:
+	// expect a clean success.
+	_, _, exitCode := runImporter(t, args...)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
 
 	r := parseReport(t, reportPath)
 
-	// Mode should be create-or-update.
 	if r.Meta.Mode != "create-or-update" {
 		t.Errorf("expected mode=create-or-update, got %q", r.Meta.Mode)
 	}
 
-	// With --overwrite-existing, our SSB should show action=update, not skip.
 	foundUpdate := false
 	for _, item := range r.Items {
 		if item.Source.BindingName == ssbName {
 			if item.Action == "update" {
 				foundUpdate = true
 			} else if item.Action == "skip" {
-				t.Errorf("expected action=update for %q with --overwrite-existing, got skip", ssbName)
+				t.Errorf("expected action=update for %q with --overwrite-existing --delete-existing --yes, got skip", ssbName)
 			}
 		}
 	}
 	if !foundUpdate {
-		t.Logf("warning: did not find action=update for %q in report items", ssbName)
+		reportJSON, _ := json.MarshalIndent(r, "", "  ")
+		t.Errorf("did not find action=update for %q in report items\nreport: %s", ssbName, reportJSON)
 	}
 }
 
@@ -815,6 +989,231 @@ func TestIMP_ACC_007_InvalidTokenFailsFast(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// A12 — Adopt-external workflow (IMP-ACC-028, IMP-ACC-029, IMP-ACC-030)
+//
+// These exercise the real backup -> delete -> create (and resume) mechanism
+// against a real cluster, per specs/08-adopt-external-ssb.feature
+// (IMP-ADEXT-*) and AGENTS.md's real-cluster validation checkpoint. No
+// GitOps tool is involved here (that race is validated manually, see
+// ~/ai/current-work/stackrox-co-importer-customer-share.md) — these confirm
+// the mechanism itself end-to-end: a freshly-authored, unadopted
+// ScanSettingBinding is its own blocker on RHACS >=4.11/5.0 by construction.
+// ---------------------------------------------------------------------------
+
+// IMP-ACC-028
+func TestIMP_ACC_028_DefaultReportsAndSkipsWithoutDeleting(t *testing.T) {
+	id := runID()
+	ns := coNamespace(t)
+	ssName := "e2e-ss-" + id
+	ssbName := "e2e-adext-" + id
+
+	createScanSetting(t, ns, ssName, "0 2 * * *")
+	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-e8"})
+	ssbBefore := getSSB(t, ns, ssbName)
+
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", ssbName)
+		deleteResource(t, ns, "scansettings", ssName)
+		cleanupACSConfigByName(t, ssbName)
+	})
+
+	backupDir := filepath.Join(t.TempDir(), "backup")
+	reportPath := filepath.Join(t.TempDir(), "report.json")
+	args := append(commonArgs(t), "--backup-dir", backupDir, "--report-json", reportPath)
+
+	// IMP-CLI-019: a gitops-blocked skip forces exit code 2, even though
+	// nothing failed outright — the requested import did not happen.
+	_, _, exitCode := runImporter(t, args...)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 (gitops-blocked), got %d", exitCode)
+	}
+
+	r := parseReport(t, reportPath)
+
+	foundGitops := false
+	for _, p := range r.Problems {
+		if p.ResourceRef == ssbName && p.Category == "gitops" {
+			foundGitops = true
+			if !strings.Contains(p.FixHint, "--delete-existing") {
+				t.Errorf("gitops problem fixHint does not mention --delete-existing: %q", p.FixHint)
+			}
+		}
+	}
+	if !foundGitops {
+		reportJSON, _ := json.MarshalIndent(r, "", "  ")
+		t.Fatalf("expected a gitops-category problem for %q, found none\nreport: %s", ssbName, reportJSON)
+	}
+
+	// Never touched: no delete, no mutation.
+	ssbAfter := getSSB(t, ns, ssbName)
+	if ssbAfter == "" {
+		t.Error("ScanSettingBinding was deleted — default behavior (no --delete-existing) must never delete")
+	} else if ssbAfter != ssbBefore {
+		t.Error("ScanSettingBinding was modified — default behavior (no --delete-existing) must never mutate")
+	}
+
+	// No ACS config created.
+	configs := listACSConfigs(t)
+	for _, c := range configs {
+		if c.ScanName == ssbName {
+			t.Errorf("ACS scan config %q was created — default behavior must not create while blocked", ssbName)
+		}
+	}
+}
+
+// IMP-ACC-029
+func TestIMP_ACC_029_DeleteExistingBacksUpDeletesAndCreates(t *testing.T) {
+	id := runID()
+	ns := coNamespace(t)
+	ssName := "e2e-ss-" + id
+	ssbName := "e2e-adext-" + id
+
+	createScanSetting(t, ns, ssName, "0 2 * * *")
+	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-e8"})
+
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", ssbName)
+		deleteResource(t, ns, "scansettings", ssName)
+		cleanupACSConfigByName(t, ssbName)
+	})
+
+	backupDir := filepath.Join(t.TempDir(), "backup")
+	reportPath := filepath.Join(t.TempDir(), "report.json")
+	args := append(commonArgs(t),
+		"--delete-existing", "--yes",
+		"--backup-dir", backupDir,
+		"--report-json", reportPath,
+	)
+
+	// No GitOps tool is involved here, so the blocking SSB can't reappear:
+	// expect a clean success (IMP-CLI-019 only forces exit 2 for a gitops
+	// problem, and none should be recorded when the create succeeds).
+	stdout, stderr, exitCode := runImporter(t, args...)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+
+	// Backup MUST exist and contain a plan.json plus the backed-up resources.
+	planPath := filepath.Join(backupDir, "plan.json")
+	if _, err := os.Stat(planPath); err != nil {
+		t.Errorf("expected plan.json at %s: %v", planPath, err)
+	}
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatalf("reading backup dir: %v", err)
+	}
+	foundSSBBackup := false
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "__ssb__"+ssbName) {
+			foundSSBBackup = true
+		}
+	}
+	if !foundSSBBackup {
+		t.Errorf("expected a backed-up ScanSettingBinding YAML for %q in %s", ssbName, backupDir)
+	}
+
+	r := parseReport(t, reportPath)
+	foundCreate := false
+	for _, item := range r.Items {
+		if item.Source.BindingName == ssbName && item.Action == "create" {
+			foundCreate = true
+		}
+	}
+	if !foundCreate {
+		reportJSON, _ := json.MarshalIndent(r, "", "  ")
+		t.Fatalf("expected action=create for %q\nreport: %s", ssbName, reportJSON)
+	}
+
+	// The live ScanSettingBinding must now be ACS/Sensor's own (new UID,
+	// stackrox label) — confirming it was genuinely deleted and recreated,
+	// not left alone.
+	ssbYAML := getSSB(t, ns, ssbName)
+	if !strings.Contains(ssbYAML, "app.kubernetes.io/name: stackrox") {
+		t.Errorf("expected the live ScanSettingBinding %q to carry the stackrox label after adoption, got:\n%s", ssbName, ssbYAML)
+	}
+
+	configs := listACSConfigs(t)
+	found := false
+	for _, c := range configs {
+		if c.ScanName == ssbName {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ACS scan config %q not found after --delete-existing --yes", ssbName)
+	}
+}
+
+// IMP-ACC-030
+//
+// Simulates an operator following IMP-ACC-028's guidance: a first run
+// without --delete-existing backs up the plan but makes no changes; the
+// operator then deletes the ScanSettingBinding themselves; a second run
+// against the SAME --backup-dir must create the scan configuration from the
+// persisted plan, since there is nothing left to discover live.
+func TestIMP_ACC_030_ResumeFromPersistedPlan(t *testing.T) {
+	id := runID()
+	ns := coNamespace(t)
+	ssName := "e2e-ss-" + id
+	ssbName := "e2e-adext-" + id
+
+	createScanSetting(t, ns, ssName, "0 2 * * *")
+	createScanSettingBinding(t, ns, ssbName, ssName, []string{"ocp4-e8"})
+
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", ssbName)
+		deleteResource(t, ns, "scansettings", ssName)
+		cleanupACSConfigByName(t, ssbName)
+	})
+
+	backupDir := filepath.Join(t.TempDir(), "backup")
+
+	// First run: default behavior, writes the backup/plan but changes nothing.
+	firstReport := filepath.Join(t.TempDir(), "first.json")
+	firstArgs := append(commonArgs(t), "--backup-dir", backupDir, "--report-json", firstReport)
+	runImporter(t, firstArgs...)
+
+	if _, err := os.Stat(filepath.Join(backupDir, "plan.json")); err != nil {
+		t.Fatalf("expected plan.json to exist after the first run: %v", err)
+	}
+
+	// Operator follows the guidance: delete the ScanSettingBinding themselves.
+	deleteResource(t, ns, "scansettingbindings", ssbName)
+
+	// Second run: same --backup-dir, no --delete-existing needed (nothing
+	// left to delete). Must resume from the plan and create.
+	secondReport := filepath.Join(t.TempDir(), "second.json")
+	secondArgs := append(commonArgs(t), "--backup-dir", backupDir, "--report-json", secondReport)
+	stdout, stderr, exitCode := runImporter(t, secondArgs...)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+
+	r := parseReport(t, secondReport)
+	foundCreate := false
+	for _, item := range r.Items {
+		if item.Source.BindingName == ssbName && item.Action == "create" {
+			foundCreate = true
+		}
+	}
+	if !foundCreate {
+		reportJSON, _ := json.MarshalIndent(r, "", "  ")
+		t.Fatalf("expected the resumed run to create %q\nstdout: %s\nreport: %s", ssbName, stdout, reportJSON)
+	}
+
+	configs := listACSConfigs(t)
+	found := false
+	for _, c := range configs {
+		if c.ScanName == ssbName {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ACS scan config %q not found after resume", ssbName)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // A9 — Auto-discovery (IMP-ACC-017)
 // IMP-ACC-018, IMP-ACC-019, IMP-ACC-020, IMP-ACC-021, IMP-ACC-022
 // ---------------------------------------------------------------------------
@@ -848,8 +1247,10 @@ func TestIMP_ACC_017_AutoDiscovery(t *testing.T) {
 
 	stdout, stderr, exitCode := runImporter(t, args...)
 
-	if exitCode != 0 && exitCode != 2 {
-		t.Fatalf("expected exit code 0 or 2, got %d\nstdout: %s\nstderr: %s",
+	// Dry-run never records a "gitops" problem (IMP-ADEXT-014), so exit code
+	// must be 0.
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstdout: %s\nstderr: %s",
 			exitCode, stdout, stderr)
 	}
 

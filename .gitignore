@@ -8,3 +8,8 @@ coverage.html
 /compliance-operator-importer
 dist/
 hack/.demo-seed-id
+
+# Default --backup-dir location (IMP-CLI-032): a timestamped directory
+# created next to wherever the binary is run from, unless --backup-dir is
+# passed explicitly.
+/co-importer-backup-*/
