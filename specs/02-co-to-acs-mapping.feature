@@ -153,61 +153,12 @@ Feature: Map Compliance Operator scheduled scan resources to ACS scan configurat
     And that problem entry MUST include a fix hint
     And other valid bindings MUST still be processed
 
-  # IMP-ADOPT-001, IMP-ADOPT-002
-  @mapping @adopt
-  Scenario: Adopt SSB after successful ACS scan config creation
-    Given ScanSettingBinding "cis-weekly" in namespace "openshift-compliance"
-    And the SSB references ScanSetting "my-old-setting"
-    And the importer successfully creates ACS scan config "cis-weekly"
-    And ACS creates ScanSetting "cis-weekly" on the cluster
-    When the importer runs the adoption step
-    Then SSB "cis-weekly" settingsRef.name MUST be patched to "cis-weekly"
-    And the importer MUST log an info message about the adoption
-
-  # IMP-ADOPT-003
-  @mapping @adopt
-  Scenario: Skip adoption when SSB already references the correct ScanSetting
-    Given ScanSettingBinding "cis-weekly" in namespace "openshift-compliance"
-    And the SSB references ScanSetting "cis-weekly"
-    And the importer successfully creates ACS scan config "cis-weekly"
-    When the importer runs the adoption step
-    Then SSB "cis-weekly" settingsRef.name MUST NOT be modified
-
-  # IMP-ADOPT-004, IMP-ADOPT-005, IMP-ADOPT-006
-  # The adoption step polls for the ACS-created ScanSetting for at least 2 seconds
-  # before giving up and emitting a warning.
-  @mapping @adopt @timeout
-  Scenario: Adoption warns on timeout waiting for ScanSetting
-    Given ScanSettingBinding "cis-weekly" in namespace "openshift-compliance"
-    And the SSB references ScanSetting "my-old-setting"
-    And the importer successfully creates ACS scan config "cis-weekly"
-    And ACS has NOT yet created ScanSetting "cis-weekly" on the cluster
-    When the adoption poll times out after at least 2 seconds
-    Then the importer MUST log a warning
-    And the SSB MUST NOT be modified
-    And the importer MUST NOT exit with an error
-
-  # IMP-ADOPT-007
-  @mapping @adopt @multicluster
-  Scenario: Adoption patches SSBs independently per cluster
-    Given kubecontext "ctx-a" has SSB "cis-weekly" referencing ScanSetting "setting-a"
-    And kubecontext "ctx-b" has SSB "cis-weekly" referencing ScanSetting "setting-b"
-    And the importer creates one ACS scan config "cis-weekly" for both clusters
-    And ACS creates ScanSetting "cis-weekly" on both clusters
-    When the importer runs the adoption step
-    Then SSB "cis-weekly" on ctx-a MUST be patched to reference "cis-weekly"
-    And SSB "cis-weekly" on ctx-b MUST be patched to reference "cis-weekly"
-
-  # IMP-ADOPT-006, IMP-ADOPT-008
-  @mapping @adopt @multicluster @partial
-  Scenario: Partial adoption succeeds when one cluster times out
-    Given kubecontext "ctx-a" has SSB "cis-weekly" referencing ScanSetting "setting-a"
-    And kubecontext "ctx-b" has SSB "cis-weekly" referencing ScanSetting "setting-b"
-    And ACS creates ScanSetting "cis-weekly" on ctx-a but NOT on ctx-b
-    When the importer runs the adoption step
-    Then SSB "cis-weekly" on ctx-a MUST be patched
-    And the importer MUST warn about ctx-b timeout
-    And the importer MUST NOT exit with an error
+  # NOTE: the former IMP-ADOPT-001..008 "patch SSB settingsRef after a successful create"
+  # scenarios were retired. RHACS >=4.11/5.0 Central rejects creating (or updating) a scan
+  # configuration whose profiles overlap an existing non-ACS-managed SSB, so a
+  # create-then-patch flow can never run in practice — the create never succeeds while the
+  # external SSB still exists. See specs/08-adopt-external-ssb.feature (IMP-ADEXT-*) for the
+  # replacement: detect the blocking external SSB, back it up, remove it, then create.
 
   # IMP-MAP-012, IMP-MAP-013, IMP-MAP-014, IMP-MAP-015
   @mapping @schedule @problems

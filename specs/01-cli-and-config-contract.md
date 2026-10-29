@@ -69,6 +69,34 @@ Define the importer interface so it can be implemented and tested predictably.
   - when `true`: existing ACS scan configs with matching `scanName` are updated via
     `PUT /v2/compliance/scan/configurations/{id}`.
 
+### Adopting externally-managed ScanSettingBindings
+
+RHACS >=4.11/5.0 Central rejects creating (or updating) a scan configuration whose profiles
+overlap an existing ScanSettingBinding on the target cluster that is NOT labeled
+`app.kubernetes.io/name: stackrox` (i.e. an "external" SSB — typically GitOps-managed). Since
+the importer's payloads are built from exactly such external SSBs, this blocks every create by
+construction. The importer MUST detect this and guide the operator through safely removing the
+external SSB, rather than surfacing ACS's raw error. Full runtime behavior is specified in
+`08-adopt-external-ssb.feature` (`IMP-ADEXT-*`); this section defines the flag contract.
+
+- **IMP-CLI-030**: `--delete-existing` (boolean, default `false`): when set, the importer
+  deletes blocking external ScanSettingBindings itself (after confirmation), instead of the
+  default behavior of reporting the conflict and skipping.
+- **IMP-CLI-031**: `--yes` / `-y` (boolean, default `false`): skips the interactive
+  confirmation prompt that `--delete-existing` would otherwise show. Has no effect when
+  `--delete-existing` is not set.
+- **IMP-CLI-032**: `--backup-dir <path>` (default: `./co-importer-backup-<RFC3339 timestamp>`):
+  directory where backups of resources the importer deletes, and a resumable plan
+  (`plan.json`), are written. Before writing, the importer MUST verify the directory is
+  either new/empty or contains a `plan.json` from a prior run (see IMP-ADEXT-011/012/015);
+  otherwise it MUST fail rather than write into an unrelated directory.
+- **IMP-CLI-033**: `--settle-timeout <duration>` (default `5s`): after a blocking external SSB
+  is observed gone, the importer re-polls for this duration to detect GitOps self-healing
+  before proceeding to create the scan configuration.
+- **IMP-CLI-034**: when `--delete-existing` is set, `--yes` is not set, and stdin is not a TTY,
+  importer MUST fail at startup with an error instructing the operator to pass `--yes`
+  (an interactive confirmation prompt cannot be shown non-interactively).
+
 ## Preflight checks
 
 - **IMP-CLI-013**: `--endpoint` MUST use HTTPS:
@@ -93,7 +121,12 @@ Define the importer interface so it can be implemented and tested predictably.
 
 - **IMP-CLI-017**: `0` when run completed with no failed bindings.
 - **IMP-CLI-018**: `1` for fatal preflight/config errors (no import attempted).
-- **IMP-CLI-019**: `2` for partial success (some bindings failed).
+- **IMP-CLI-019**: `2` for partial success (some bindings failed), **or** when any `problems[]`
+  entry has category `gitops` (a requested import did not happen because it was blocked by an
+  external ScanSettingBinding — whether reported by default, declined at the confirmation
+  prompt, or blocked again by GitOps self-heal). A `gitops`-blocked scan is a routine report
+  condition (not a fatal error), but it means the requested import was not completed, so it
+  MUST NOT be indistinguishable from a fully successful run via exit code alone.
 
 ### Console summary
 
@@ -105,18 +138,23 @@ Define the importer interface so it can be implemented and tested predictably.
 ### JSON report shape
 
 - **IMP-CLI-021**: when `--report-json` is set, write valid JSON with:
-  - `meta` (timestamp, dryRun, namespaceScope, mode=`create-only` | `create-or-update`)
+  - `meta` (timestamp, dryRun, namespaceScope, mode=`create-only` | `create-or-update`,
+    `backupDir` — set whenever a blocking external SSB was found, empty otherwise)
   - `counts` (discovered, create, skip, failed)
   - `items[]`:
     - `source` (`namespace`, `bindingName`, `scanSettingName`)
-    - `action` (`create|skip|fail`)
+    - `action` (`create|skip|fail|update`)
     - `reason`
     - `attempts`
     - `acsScanConfigId` (if known)
     - `error` (if failed)
   - `problems[]`:
     - `severity` (`error|warning`)
-    - `category` (`input|mapping|conflict|auth|api|retry|validation`)
+    - `category` (`input|mapping|conflict|auth|api|retry|validation|gitops|orphan`)
+      - `gitops`: a blocking external SSB was found, reappeared during the settle window, or
+        otherwise prevented a create/update (IMP-ADEXT-*)
+      - `orphan`: a ScanSetting previously referenced by a deleted external SSB was left behind
+        (IMP-ADEXT-010)
     - `resourceRef` (`namespace/name` or synthetic ref for non-resource errors)
     - `description` (what happened)
     - `fixHint` (how to fix)

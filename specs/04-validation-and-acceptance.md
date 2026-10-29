@@ -121,6 +121,14 @@ Teardown: delete the ScanSettingBinding and ScanSetting.
 
 - **IMP-ACC-004**: apply mode MUST create missing target ACS configs.
 
+**Note (post-IMP-ADEXT-*):** a freshly-authored CO ScanSettingBinding has no
+`app.kubernetes.io/name: stackrox` label, so on RHACS >=4.11/5.0 it is, by construction, the
+"external ScanSettingBinding" that blocks its own create (see `08-adopt-external-ssb.feature`).
+A plain apply-mode run (no extra flags) against such a binding now correctly reports a
+`gitops`-category problem and skips, rather than creating — this is IMP-ACC-028, not a failure
+of IMP-ACC-004. Since this test has no GitOps tool involved, `--delete-existing --yes` resolves
+the (uncontested, instant) blocker and exercises the intended create path.
+
 Setup:
 
 1. Create a ScanSetting `e2e-ss-<run-id>` with schedule `0 2 * * *`.
@@ -133,6 +141,7 @@ Command:
 "${IMPORTER_BIN}" \
   --endpoint "${ROX_ENDPOINT}" \
   --co-namespace "${CO_NAMESPACE}" \
+  --delete-existing --yes \
   --report-json "/tmp/co-acs-import-apply.json"
 ```
 
@@ -148,12 +157,15 @@ Teardown: delete the ACS scan config, ScanSettingBinding, and ScanSetting.
 
 - **IMP-ACC-005**: second run with same inputs MUST be no-op.
 
-Setup:
+**Note (post-IMP-ADEXT-*):** the first run must use `--delete-existing --yes` (see A4). After it
+succeeds, ACS/Sensor materializes its own `app.kubernetes.io/name: stackrox`-labeled
+ScanSettingBinding reusing the same name — which IMP-ADEXT-013 excludes from source discovery
+entirely. So on the second run `e2e-idem-<run-id>` no longer appears in `items[]` at all (there
+is nothing left to import for it), rather than appearing with `action=skip`. The observable
+idempotency guarantee — zero new creates, zero net change in ACS — still holds and is what this
+check verifies.
 
-1. Create CO resources as in A4 (`e2e-idem-<run-id>`).
-2. Run importer in apply mode (first run).
-
-Command (second run):
+Command (second run, no extra flags needed — nothing is left to adopt):
 
 ```bash
 "${IMPORTER_BIN}" \
@@ -164,7 +176,8 @@ Command (second run):
 
 Pass conditions:
 
-- report shows `action=skip` for `e2e-idem-<run-id>`,
+- `e2e-idem-<run-id>` does NOT appear in `items[]` with `action=create` (it may not appear at
+  all, per the note above),
 - `counts.create` is 0 on second run,
 - no net changes in ACS config list between first and second run.
 
@@ -176,19 +189,34 @@ Teardown: delete ACS scan config, ScanSettingBinding, and ScanSetting.
   and recorded in `problems[]`.
 - **IMP-ACC-014**: with `--overwrite-existing`, existing scan names MUST be updated via PUT.
 
+**Note (post-IMP-ADEXT-*):** to test the "ACS already has this scanName" skip/update path in
+isolation from the adopt-external dance, the ACS scan config is created directly via the API
+(not through the importer), while the matching CO ScanSettingBinding stays external
+(unadopted, no stackrox label) with the same name. The importer's pre-check (an internal
+dry-run "peek" at the reconcile outcome) finds the scanName already exists and returns `skip`
+immediately — IMP-ACC-006 never touches the external ScanSettingBinding, confirming the
+importer doesn't start the destructive adoption dance for a binding it isn't going to write
+anything for. `--overwrite-existing` (IMP-ACC-014), in contrast, means a write (PUT) IS needed,
+so the external ScanSettingBinding becomes a genuine blocker again (Central's conflict check
+applies to updates too, not just creates) and `--delete-existing --yes` is required for the
+update to succeed.
+
 Setup:
 
-1. Create CO resources (`e2e-exist-<run-id>`).
-2. Run importer in apply mode to create the ACS scan config.
+1. Create a ScanSettingBinding `e2e-exist-<run-id>` (external, unadopted) referencing profile
+   `ocp4-cis`.
+2. Create an ACS scan config named `e2e-exist-<run-id>` directly via
+   `POST /v2/compliance/scan/configurations` (bypassing the importer).
 
 Procedure (create-only / IMP-ACC-006):
 
-1. Re-run importer without `--overwrite-existing`.
+1. Run importer without `--overwrite-existing` and without `--delete-existing`.
 2. Verify that config is skipped and `problems[]` has category `conflict`.
+3. Verify the ScanSettingBinding was NOT deleted or modified.
 
 Procedure (overwrite / IMP-ACC-014):
 
-1. Re-run importer with `--overwrite-existing`.
+1. Run importer with `--overwrite-existing --delete-existing --yes`.
 2. Verify that report shows `action=update`, not `skip`.
 
 Teardown: delete ACS scan config, ScanSettingBinding, and ScanSetting.
@@ -298,7 +326,48 @@ Pass conditions:
 
 Teardown: delete both ScanSettingBindings and their ScanSettings.
 
+### A12 - Adopt-external workflow (delete-then-create)
+
+Covers the real-cluster checkpoint for `internal/adoptexternal` (IMP-ADEXT-*): RHACS >=4.11/5.0
+rejects creating (or updating) a scan configuration whose profiles overlap an existing
+non-ACS-managed ("external") ScanSettingBinding. See `08-adopt-external-ssb.feature` for the
+full unit-level behavior; this section is the mandatory real-cluster validation (per `AGENTS.md`,
+no feature area is "done" without at least one successful real-cluster run).
+
+- **IMP-ACC-028**: default behavior (no `--delete-existing`) against a real external SSB MUST
+  report a `gitops`-category problem with remediation and MUST NOT delete, patch, or otherwise
+  mutate the ScanSettingBinding or ScanSetting.
+- **IMP-ACC-029**: `--delete-existing --yes` against a real external SSB MUST: write a backup of
+  the SSB and its ScanSetting to `--backup-dir`, delete the SSB, confirm via `--settle-timeout`
+  that it does not reappear, then successfully create the ACS scan configuration — verified by
+  the ComplianceSuite reaching `DONE` and the new SSB/ScanSetting carrying
+  `app.kubernetes.io/name: stackrox`. (Validated manually against `ga-ocp-cron-2` with a real
+  ArgoCD `Application`; this check formalizes that result as a repeatable acceptance test.)
+- **IMP-ACC-030**: after a run is interrupted (or the operator deletes the SSB manually following
+  IMP-ACC-028's guidance) and the external SSB is already gone, re-running the importer against
+  the same `--backup-dir` MUST create the scan configuration from the persisted `plan.json`
+  rather than finding nothing via live discovery.
+
+Setup:
+
+1. Create a ScanSetting `e2e-adext-ss-<run-id>` and a ScanSettingBinding `e2e-adext-<run-id>`
+   referencing it and a profile known to exist on the cluster, with no
+   `app.kubernetes.io/name: stackrox` label (a plain `oc apply`, not an ACS-created resource,
+   is sufficient — a real GitOps controller is not required for this check; see
+   `~/ai/current-work/stackrox-co-importer-customer-share.md` for the ArgoCD-specific
+   self-heal race finding, which is the reason `--settle-timeout` exists).
+
+Pass conditions: as described per IMP-ACC-028/029/030 above.
+
+Teardown: delete the ACS scan config (if created) and any resources left by the test.
+
 ## Non-goal compliance checks
 
 - **IMP-ACC-010**: no code changes in Sensor/Central runtime paths are required to run importer.
-- **IMP-ACC-011**: importer MUST not mutate Compliance Operator resources.
+- **IMP-ACC-011**: by default, in `--dry-run`, and whenever `--delete-existing` is not passed,
+  importer MUST NOT mutate Compliance Operator resources — a blocking external SSB is reported
+  and skipped, never touched. The sole exception is the explicit, opt-in `--delete-existing`
+  flow (IMP-ADEXT-004), which deletes a blocking external ScanSettingBinding only after writing
+  a backup and obtaining confirmation (interactive `y`/`N`, or `--yes`). The importer never
+  deletes or mutates a ScanSetting, Profile, or TailoredProfile, and never mutates any CO
+  resource that is not an identified blocker.
