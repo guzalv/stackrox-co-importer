@@ -76,6 +76,9 @@ Define the importer interface so it can be implemented and tested predictably.
   - when `false`: existing ACS scan configs with matching `scanName` are skipped (create-only).
   - when `true`: existing ACS scan configs with matching `scanName` are updated via
     `PUT /v2/compliance/scan/configurations/{id}`.
+- **IMP-CLI-035**: `--help`/`-h` MUST print the usage/flag listing and exit with code `0`.
+  It MUST NOT be treated as a config error (no `error:` line, not exit `1`), since asking
+  for help is a successful, intended invocation.
 
 ### Adopting externally-managed ScanSettingBindings
 

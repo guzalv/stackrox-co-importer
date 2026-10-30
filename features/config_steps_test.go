@@ -1,6 +1,7 @@
 package features
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -52,6 +53,16 @@ func (c *configTestCtx) configParsingSuceeds() error {
 func (c *configTestCtx) configParsingFails() error {
 	if c.err == nil {
 		return fmt.Errorf("expected error, got nil (cfg=%+v)", c.cfg)
+	}
+	return nil
+}
+
+// IMP-CLI-035: --help/-h is a successful invocation signalled by
+// config.ErrHelpRequested, which main.go maps to exit code 0 (not a config
+// error).
+func (c *configTestCtx) configParsingRequestsHelp() error {
+	if !errors.Is(c.err, config.ErrHelpRequested) {
+		return fmt.Errorf("expected config.ErrHelpRequested, got: %v (cfg=%+v)", c.err, c.cfg)
 	}
 	return nil
 }
@@ -438,6 +449,7 @@ func registerConfigSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I parse config with flags "([^"]*)"$`, c.parseConfigWithFlags)
 	ctx.Step(`^config parsing succeeds$`, c.configParsingSuceeds)
 	ctx.Step(`^config parsing fails$`, c.configParsingFails)
+	ctx.Step(`^config parsing requests help$`, c.configParsingRequestsHelp)
 	ctx.Step(`^config parsing fails with error containing "([^"]*)"$`, c.configParsingFailsWithErrorContaining)
 	ctx.Step(`^the error also contains "([^"]*)"$`, c.theErrorAlsoContains)
 	ctx.Step(`^the endpoint is "([^"]*)"$`, c.theEndpointIs)

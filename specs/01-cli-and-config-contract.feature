@@ -372,6 +372,11 @@ Feature: CLI and configuration contract
     Then config parsing succeeds
     And list-ssbs is enabled
 
+  # IMP-CLI-035: --help prints usage and exits 0, not a config error.
+  Scenario: --help requests help and is not an error
+    When I parse config with flags "--help"
+    Then config parsing requests help
+
   # ─── IMP-CLI-030, IMP-CLI-031: --delete-existing / --yes ────────────────────
 
   # IMP-CLI-030

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -37,6 +38,10 @@ func runMain() int {
 	stdinIsTTY := func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 	cfg, err := config.Parse(os.Args[1:], os.Getenv, stdinIsTTY)
 	if err != nil {
+		// IMP-CLI-035: --help/-h already printed usage; exit cleanly.
+		if errors.Is(err, config.ErrHelpRequested) {
+			return config.ExitOK
+		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return config.ExitConfigError
 	}
