@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	"github.com/stackrox/co-importer/internal/config"
+	"github.com/guzalv/stackrox-co-importer/internal/config"
 )
 
 // configTestCtx holds per-scenario state for CLI config contract scenarios.

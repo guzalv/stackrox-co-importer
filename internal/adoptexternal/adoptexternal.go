@@ -19,8 +19,8 @@
 package adoptexternal
 
 import (
-	"github.com/stackrox/co-importer/internal/merge"
-	"github.com/stackrox/co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/merge"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
 )
 
 // StackroxManagedLabelKey and StackroxManagedLabelValue identify a

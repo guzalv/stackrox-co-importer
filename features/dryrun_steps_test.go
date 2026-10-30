@@ -5,8 +5,8 @@ import (
 	"os"
 
 	"github.com/cucumber/godog"
-	"github.com/stackrox/co-importer/internal/adoptexternal"
-	"github.com/stackrox/co-importer/internal/merge"
+	"github.com/guzalv/stackrox-co-importer/internal/adoptexternal"
+	"github.com/guzalv/stackrox-co-importer/internal/merge"
 )
 
 // registerDryRunSteps registers step definitions for the "Dry-run: zero side

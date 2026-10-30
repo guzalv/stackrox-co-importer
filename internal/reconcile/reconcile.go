@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/stackrox/co-importer/internal/acs"
-	"github.com/stackrox/co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/acs"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
 )
 
 // Options controls reconciler behavior.

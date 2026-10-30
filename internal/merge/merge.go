@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/stackrox/co-importer/internal/mapping"
-	"github.com/stackrox/co-importer/internal/models"
-	"github.com/stackrox/co-importer/internal/problems"
+	"github.com/guzalv/stackrox-co-importer/internal/mapping"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/problems"
 )
 
 // ClusterSSB represents an SSB from a specific cluster context.

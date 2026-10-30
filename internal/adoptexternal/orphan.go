@@ -3,7 +3,7 @@ package adoptexternal
 import (
 	"fmt"
 
-	"github.com/stackrox/co-importer/internal/problems"
+	"github.com/guzalv/stackrox-co-importer/internal/problems"
 )
 
 // OrphanWarning builds the "orphan" problem recorded when a ScanSetting that

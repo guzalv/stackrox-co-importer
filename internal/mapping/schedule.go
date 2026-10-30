@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/stackrox/co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
 )
 
 // ConvertCronToACSSchedule converts a standard 5-field cron expression to an

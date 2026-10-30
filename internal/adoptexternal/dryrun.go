@@ -3,7 +3,7 @@ package adoptexternal
 import (
 	"fmt"
 
-	"github.com/stackrox/co-importer/internal/merge"
+	"github.com/guzalv/stackrox-co-importer/internal/merge"
 )
 
 // DryRunBlocker reports, for a scanName blocked by external

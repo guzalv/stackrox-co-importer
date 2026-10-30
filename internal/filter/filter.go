@@ -4,7 +4,7 @@ package filter
 import (
 	"regexp"
 
-	"github.com/stackrox/co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
 )
 
 // ExcludeSSBs returns the subset of ssbs whose names do NOT match any of the

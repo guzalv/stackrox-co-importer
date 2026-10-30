@@ -9,10 +9,10 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/stackrox/co-importer/internal/acs"
-	"github.com/stackrox/co-importer/internal/config"
-	"github.com/stackrox/co-importer/internal/run"
-	"github.com/stackrox/co-importer/internal/status"
+	"github.com/guzalv/stackrox-co-importer/internal/acs"
+	"github.com/guzalv/stackrox-co-importer/internal/config"
+	"github.com/guzalv/stackrox-co-importer/internal/run"
+	"github.com/guzalv/stackrox-co-importer/internal/status"
 )
 
 // Set by GoReleaser via ldflags.

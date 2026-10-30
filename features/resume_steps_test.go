@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/cucumber/godog"
-	"github.com/stackrox/co-importer/internal/adoptexternal"
-	"github.com/stackrox/co-importer/internal/models"
-	"github.com/stackrox/co-importer/internal/reconcile"
+	"github.com/guzalv/stackrox-co-importer/internal/adoptexternal"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/reconcile"
 )
 
 // registerResumeSteps registers step definitions for the "Resume after

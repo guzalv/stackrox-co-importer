@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/cucumber/godog"
-	"github.com/stackrox/co-importer/internal/filter"
-	"github.com/stackrox/co-importer/internal/listssbs"
-	"github.com/stackrox/co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/filter"
+	"github.com/guzalv/stackrox-co-importer/internal/listssbs"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
 )
 
 // excludeTestCtx holds per-scenario state for exclude/list-ssbs scenarios.
