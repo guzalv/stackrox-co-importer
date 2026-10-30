@@ -939,6 +939,11 @@ func ctxResolvesToClusterID(ctxLabel, clusterID string) error {
 
 func theImporterMergesSSBs() error {
 	// IMP-MAP-019, IMP-MAP-020, IMP-MAP-021
+	// IMP-ACC-015: unit-level coverage (via internal/merge, fed by fake per-context
+	// SSBs/cluster IDs set up by the steps above) of "same SSB name across multiple
+	// source clusters with matching profiles/schedule -> one scan config targeting
+	// all resolved cluster IDs". A real multi-cluster, multi-kubecontext e2e run is
+	// a tracked follow-up (requires a second live cluster in CI).
 	var inputs []merge.ClusterSSB
 	for _, entry := range mtc.clusterSSBs {
 		clusterID := mtc.clusterIDs[entry.Context]

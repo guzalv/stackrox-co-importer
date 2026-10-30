@@ -200,6 +200,7 @@ func TestExecuteWithRetry_NonTransientNoRetry(t *testing.T) {
 
 // ── executeWithRetry: transient retries up to max ─────────────────────────────
 
+// IMP-ACC-009: transient ACS failures MUST follow retry policy and record attempt counts.
 func TestExecuteWithRetry_TransientSucceedsOnRetry(t *testing.T) {
 	calls := 0
 	client := &fakeACSClient{}
@@ -221,6 +222,9 @@ func TestExecuteWithRetry_TransientSucceedsOnRetry(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("expected 2 calls, got %d", calls)
+	}
+	if result.Attempts != 2 {
+		t.Errorf("Attempts: got %d, want 2 (recorded attempt count after one retry)", result.Attempts)
 	}
 }
 

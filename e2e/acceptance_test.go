@@ -20,6 +20,16 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// IMP-ACC-010: this entire e2e suite runs against a stock, unmodified
+// StackRox + Compliance Operator install (see hack/ci-setup-kind-stackrox.sh,
+// which installs both products from their published manifests/images with no
+// importer-specific patches). The importer only talks to the public CO/K8s
+// API and the public ACS API as an external client — it never requires
+// Sensor or Central source changes. That this whole suite passes against an
+// unmodified install is the evidence for that non-goal.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Report JSON shape (IMP-CLI-021)
 // ---------------------------------------------------------------------------
 
@@ -1072,6 +1082,7 @@ func TestIMP_ACC_028_DefaultReportsAndSkipsWithoutDeleting(t *testing.T) {
 	for _, p := range r.Problems {
 		if p.ResourceRef == ssbName && p.Category == "gitops" {
 			foundGitops = true
+			// IMP-ACC-012: the gitops problem MUST carry a remediation hint.
 			if !strings.Contains(p.FixHint, "--delete-existing") {
 				t.Errorf("gitops problem fixHint does not mention --delete-existing: %q", p.FixHint)
 			}
@@ -1082,7 +1093,8 @@ func TestIMP_ACC_028_DefaultReportsAndSkipsWithoutDeleting(t *testing.T) {
 		t.Fatalf("expected a gitops-category problem for %q, found none\nreport: %s", ssbName, reportJSON)
 	}
 
-	// Never touched: no delete, no mutation.
+	// IMP-ACC-011: without --delete-existing, importer MUST NOT mutate CO resources —
+	// the blocker is reported and skipped, never touched.
 	ssbAfter := getSSB(t, ns, ssbName)
 	if ssbAfter == "" {
 		t.Error("ScanSettingBinding was deleted — default behavior (no --delete-existing) must never delete")
@@ -1303,4 +1315,138 @@ func TestIMP_ACC_017_AutoDiscovery(t *testing.T) {
 
 	fmt.Fprintf(os.Stderr, "auto-discovery report: discovered=%d, create=%d, skip=%d, failed=%d\n",
 		r.Counts.Discovered, r.Counts.Create, r.Counts.Skip, r.Counts.Failed)
+}
+
+// ---------------------------------------------------------------------------
+// A1 — CO resource discovery (IMP-ACC-001)
+// ---------------------------------------------------------------------------
+
+// IMP-ACC-001
+//
+// Per specs/04-validation-and-acceptance.md A1: an importer run MUST begin
+// only if required CO resource types are listable. This runs the same
+// kubectl commands the spec names directly and asserts each exits 0 against
+// the test namespace, independent of whether any resources of that type
+// currently exist there.
+func TestIMP_ACC_001_RequiredCOResourceTypesListable(t *testing.T) {
+	ns := coNamespace(t)
+
+	requiredTypes := []string{
+		"scansettingbindings",
+		"scansettings",
+		"profiles",
+	}
+
+	for _, resourceType := range requiredTypes {
+		fullGVR := resourceType + ".compliance.openshift.io"
+		cmd := exec.Command("kubectl", "get", fullGVR, "-n", ns)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Errorf("kubectl get %s -n %s failed (exit != 0): %v\n%s", fullGVR, ns, err, string(out))
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A7 — Failure paths (IMP-ACC-008)
+// IMP-ACC-018, IMP-ACC-019, IMP-ACC-020, IMP-ACC-021, IMP-ACC-022
+// ---------------------------------------------------------------------------
+
+// IMP-ACC-008
+//
+// A ScanSettingBinding referencing a ScanSetting that does not exist MUST
+// fail only that binding: the run still processes other, valid bindings,
+// but the overall exit code MUST be 2 (partial success/failure), per
+// specs/04-validation-and-acceptance.md A7.
+func TestIMP_ACC_008_BrokenBindingFailsOnlyItself(t *testing.T) {
+	id := runID()
+	ns := coNamespace(t)
+
+	validSSName := "e2e-ss-" + id
+	validSSBName := "e2e-valid-" + id
+	brokenSSBName := "e2e-broken-" + id
+	missingSettingName := "does-not-exist-" + id
+
+	// IMP-ACC-018: create own CO resources.
+	createScanSetting(t, ns, validSSName, "0 2 * * *")
+	createScanSettingBinding(t, ns, validSSBName, validSSName, []string{"ocp4-cis"})
+	// Broken binding: references a ScanSetting that is deliberately never
+	// created.
+	createScanSettingBinding(t, ns, brokenSSBName, missingSettingName, []string{"ocp4-cis"})
+
+	// IMP-ACC-020: clean up ALL resources via t.Cleanup, even on failure.
+	t.Cleanup(func() {
+		deleteResource(t, ns, "scansettingbindings", brokenSSBName)
+		deleteResource(t, ns, "scansettingbindings", validSSBName)
+		deleteResource(t, ns, "scansettings", validSSName)
+		cleanupACSConfigByName(t, validSSBName)
+	})
+
+	reportPath := filepath.Join(t.TempDir(), "broken-binding.json")
+	// IMP-ACC-028: the valid binding is freshly authored (no stackrox
+	// label), so it is its own gitops blocker by construction on
+	// RHACS >=4.11/5.0; --delete-existing --yes resolves that uncontested
+	// blocker so the valid binding can actually be created, isolating the
+	// assertion to the broken binding's effect on the exit code.
+	args := append(commonArgs(t),
+		"--delete-existing", "--yes",
+		"--backup-dir", filepath.Join(t.TempDir(), "backup"),
+		"--report-json", reportPath,
+	)
+
+	stdout, stderr, exitCode := runImporter(t, args...)
+
+	// The broken binding's failure MUST be what drives the exit code to 2 —
+	// a partial run (some succeeded, one failed), not a clean success and
+	// not a fatal preflight failure.
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 (broken binding fails only itself), got %d\nstdout: %s\nstderr: %s",
+			exitCode, stdout, stderr)
+	}
+
+	r := parseReport(t, reportPath)
+
+	// The broken binding MUST be recorded as failed: either as an items[]
+	// entry with action=fail, or as a problem referencing it (both forms
+	// count as "marked failed" per IMP-MAP-008..011's sibling unit-level
+	// contract). Either way it MUST NOT be silently dropped from the report.
+	brokenFound := false
+	for _, item := range r.Items {
+		if item.Source.BindingName == brokenSSBName {
+			brokenFound = true
+			if item.Action != "fail" {
+				t.Errorf("expected action=fail for broken binding %q, got %q", brokenSSBName, item.Action)
+			}
+		}
+	}
+	for _, p := range r.Problems {
+		if strings.Contains(p.ResourceRef, brokenSSBName) {
+			brokenFound = true
+			if p.Description == "" {
+				t.Error("broken-binding problem has empty description")
+			}
+			if p.FixHint == "" {
+				t.Error("broken-binding problem has empty fixHint")
+			}
+		}
+	}
+	if !brokenFound {
+		reportJSON, _ := json.MarshalIndent(r, "", "  ")
+		t.Fatalf("expected %q to be recorded as failed (items[] or problems[]), found neither\nreport: %s",
+			brokenSSBName, reportJSON)
+	}
+
+	// The valid binding MUST still be processed (created, per
+	// --delete-existing --yes resolving its own gitops blocker).
+	validProcessed := false
+	for _, item := range r.Items {
+		if item.Source.BindingName == validSSBName && (item.Action == "create" || item.Action == "skip") {
+			validProcessed = true
+		}
+	}
+	if !validProcessed {
+		reportJSON, _ := json.MarshalIndent(r, "", "  ")
+		t.Fatalf("expected valid binding %q to be processed (create or skip), found no such item\nreport: %s",
+			validSSBName, reportJSON)
+	}
 }

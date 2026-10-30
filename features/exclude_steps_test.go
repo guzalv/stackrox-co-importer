@@ -14,9 +14,9 @@ import (
 
 // excludeTestCtx holds per-scenario state for exclude/list-ssbs scenarios.
 type excludeTestCtx struct {
-	ssbs      []models.ScanSettingBinding
-	filtered  []models.ScanSettingBinding
-	listOut   bytes.Buffer
+	ssbs     []models.ScanSettingBinding
+	filtered []models.ScanSettingBinding
+	listOut  bytes.Buffer
 }
 
 var etc *excludeTestCtx
@@ -49,6 +49,7 @@ func excludePatternIsApplied(pattern string) {
 }
 
 // IMP-CLI-028
+// IMP-ACC-027: exercises "Multiple --exclude patterns are OR-ed".
 func excludePatternsAreApplied(patterns string) {
 	etc.filtered = filter.ExcludeSSBs(etc.ssbs, strings.Split(patterns, ","))
 }
@@ -59,6 +60,10 @@ func noExcludePatternsAreApplied() {
 }
 
 // IMP-CLI-029
+// IMP-ACC-023: exercises "--list-ssbs prints namespace/name one per line
+// sorted" — covers the sorted, namespace/name-per-line output contract
+// (the exit-0-without-ACS half of IMP-ACC-023 is covered separately by
+// TestIMP_CLI_029_ListSSBsWithoutACSDoesNotPanic in internal/run).
 func ssbListOutputRequestedNoExclude() {
 	filtered := filter.ExcludeSSBs(etc.ssbs, nil)
 	etc.listOut.Reset()
@@ -66,6 +71,7 @@ func ssbListOutputRequestedNoExclude() {
 }
 
 // IMP-CLI-029
+// IMP-ACC-025: exercises "--list-ssbs with --exclude filters the output".
 func ssbListOutputRequestedWithExclude(pattern string) {
 	filtered := filter.ExcludeSSBs(etc.ssbs, []string{pattern})
 	etc.listOut.Reset()
