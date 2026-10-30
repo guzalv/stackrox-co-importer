@@ -51,7 +51,6 @@ func IsExternal(ssb *models.ScanSettingBinding) bool {
 func FilterExternal(ssbs []models.ScanSettingBinding) []models.ScanSettingBinding {
 	result := make([]models.ScanSettingBinding, 0, len(ssbs))
 	for _, ssb := range ssbs {
-		ssb := ssb
 		if IsExternal(&ssb) {
 			result = append(result, ssb)
 		}

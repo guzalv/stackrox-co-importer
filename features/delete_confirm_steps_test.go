@@ -171,7 +171,7 @@ func importerMustNotExitWithFatalError() error {
 	// IMP-ADEXT-005: declining the prompt is treated like the default skip,
 	// not an error.
 	if mtc.adextResolveErr != nil {
-		return fmt.Errorf("expected no fatal error, but got: %v", mtc.adextResolveErr)
+		return fmt.Errorf("expected no fatal error, but got: %w", mtc.adextResolveErr)
 	}
 	return nil
 }

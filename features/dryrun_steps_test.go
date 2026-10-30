@@ -72,7 +72,7 @@ func processDryRunAdoptionWorkflow() error {
 func noBackupDirectoryOrFileMustBeWritten() error {
 	// IMP-ADEXT-014
 	if mtc.backupErr != nil {
-		return fmt.Errorf("expected no backup attempt in dry-run, but WriteBackup returned: %v", mtc.backupErr)
+		return fmt.Errorf("expected no backup attempt in dry-run, but WriteBackup returned: %w", mtc.backupErr)
 	}
 	if mtc.backupDir == "" {
 		return fmt.Errorf("no backup directory path was recorded for this scenario")
