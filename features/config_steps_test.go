@@ -254,12 +254,20 @@ func (c *configTestCtx) insecureSkipVerifyIsDisabled() error {
 	return nil
 }
 
+// IMP-CLI-025: aWarningIsEmittedContaining asserts that cfg.Warnings
+// contains an entry mentioning substr. This only proves the warning is
+// computed during config parsing; printing it to stderr at runtime is
+// covered separately (see internal/status TestIMP_CLI_025_PrintWarnings).
 func (c *configTestCtx) aWarningIsEmittedContaining(substr string) error {
 	if c.cfg == nil {
 		return fmt.Errorf("config is nil")
 	}
-
-	return nil
+	for _, w := range c.cfg.Warnings {
+		if strings.Contains(w, substr) {
+			return nil
+		}
+	}
+	return fmt.Errorf("expected a warning containing %q, got: %v", substr, c.cfg.Warnings)
 }
 
 // IMP-CLI-028: thereAreNoExcludePatterns checks that ExcludePatterns is empty.

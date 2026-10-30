@@ -3,6 +3,7 @@ package status
 
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -36,4 +37,15 @@ func (p *Printer) Warn(msg string) {
 // Fail prints a failure message.
 func (p *Printer) Fail(msg string) {
 	fmt.Fprintf(os.Stderr, "  [FAIL] %s\n", msg)
+}
+
+// PrintWarnings prints each warning (e.g. config.Config.Warnings, such as
+// the IMP-CLI-025 overlapping-auth-vars notice) to w using the same
+// "[WARN]" format as Printer.Warn. It is a package-level function, rather
+// than a Printer method, so callers can print config warnings before a
+// Printer (or any other part of the pipeline) exists. IMP-CLI-025
+func PrintWarnings(w io.Writer, warnings []string) {
+	for _, msg := range warnings {
+		fmt.Fprintf(w, "  [WARN] %s\n", msg)
+	}
 }
