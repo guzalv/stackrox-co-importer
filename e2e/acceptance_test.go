@@ -261,10 +261,9 @@ func decoyClusterName(t *testing.T) string {
 	return "ga-ocp-cron"
 }
 
-// resolveClusterID looks up the ACS cluster ID for clusterName via the ACS
-// API. Used by createACSConfigDirect, which (unlike the importer) has no
-// auto-discovery of its own.
-func resolveClusterID(t *testing.T, clusterName string) string {
+// lookupClusterID returns the ACS cluster ID for clusterName, or "" if no such
+// cluster is registered.
+func lookupClusterID(t *testing.T, clusterName string) string {
 	t.Helper()
 	body := acsAPIGet(t, "/v1/clusters")
 	var resp struct {
@@ -278,7 +277,25 @@ func resolveClusterID(t *testing.T, clusterName string) string {
 			return c.ID
 		}
 	}
-	t.Fatalf("ACS cluster named %q not found", clusterName)
+	return ""
+}
+
+// resolveDecoyClusterID resolves the decoy cluster ID, but skips the test
+// (rather than failing it) when no decoy cluster is registered. The decoy
+// pattern needs a second registered ACS cluster with its own Sensor-synced
+// profiles — available on the real multi-cluster OCP test env, but not on the
+// single-cluster kind CI setup. Making kind provide a faithful decoy requires
+// a genuinely separate second kind cluster + Sensor (cross-cluster networking),
+// tracked as a follow-up spike. Until then these tests only run where a decoy
+// exists.
+func resolveDecoyClusterID(t *testing.T) string {
+	t.Helper()
+	clusterName := decoyClusterName(t)
+	if id := lookupClusterID(t, clusterName); id != "" {
+		return id
+	}
+	t.Skipf("decoy cluster %q not registered in ACS; this test needs a second "+
+		"cluster (set CO_DECOY_CLUSTER_NAME, or run against a multi-cluster env)", clusterName)
 	return ""
 }
 
@@ -346,6 +363,27 @@ func getSSB(t *testing.T, namespace, name string) string {
 		return ""
 	}
 	return string(out)
+}
+
+// waitForSSBContains polls the live ScanSettingBinding until its YAML contains
+// substr, or the timeout elapses. Sensor materializes its own labeled SSB
+// asynchronously after a scan config is created, so callers that assert on the
+// Sensor-created object (e.g. the stackrox ownership label) must wait for it
+// rather than reading once immediately. Returns the last-seen YAML.
+func waitForSSBContains(t *testing.T, namespace, name, substr string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last string
+	for {
+		last = getSSB(t, namespace, name)
+		if strings.Contains(last, substr) {
+			return last
+		}
+		if time.Now().After(deadline) {
+			return last
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // parseReport reads and parses a JSON report file.
@@ -804,7 +842,7 @@ func TestIMP_ACC_006_SkipExistingWithoutOverwrite(t *testing.T) {
 	// clusters), without Sensor on the cluster under test ever being
 	// involved. Uses a profile not already claimed by other scan configs on
 	// this shared cluster (IMP-ACC-021 test isolation).
-	clusterID := resolveClusterID(t, decoyClusterName(t))
+	clusterID := resolveDecoyClusterID(t)
 	acsID := createACSConfigDirect(t, ssbName, []string{"ocp4-moderate"}, clusterID)
 	t.Cleanup(func() {
 		deleteACSConfig(t, acsID)
@@ -892,7 +930,7 @@ func TestIMP_ACC_014_OverwriteExistingUpdates(t *testing.T) {
 	// legitimately re-targets the config at the cluster under test, and
 	// Sensor materializing its own ScanSettingBinding there at that point is
 	// the correct, expected outcome.
-	clusterID := resolveClusterID(t, decoyClusterName(t))
+	clusterID := resolveDecoyClusterID(t)
 	createACSConfigDirect(t, ssbName, []string{"ocp4-moderate"}, clusterID)
 	// IMP-ACC-020: register cleanup immediately, before any fallible call.
 	t.Cleanup(func() {
@@ -1126,8 +1164,9 @@ func TestIMP_ACC_029_DeleteExistingBacksUpDeletesAndCreates(t *testing.T) {
 
 	// The live ScanSettingBinding must now be ACS/Sensor's own (new UID,
 	// stackrox label) — confirming it was genuinely deleted and recreated,
-	// not left alone.
-	ssbYAML := getSSB(t, ns, ssbName)
+	// not left alone. Sensor materializes it asynchronously after the scan
+	// config is created, so poll rather than read once.
+	ssbYAML := waitForSSBContains(t, ns, ssbName, "app.kubernetes.io/name: stackrox", 60*time.Second)
 	if !strings.Contains(ssbYAML, "app.kubernetes.io/name: stackrox") {
 		t.Errorf("expected the live ScanSettingBinding %q to carry the stackrox label after adoption, got:\n%s", ssbName, ssbYAML)
 	}
