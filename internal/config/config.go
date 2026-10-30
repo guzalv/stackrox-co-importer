@@ -28,6 +28,11 @@ const (
 	ExitPartialSuccess = 2
 )
 
+// ErrHelpRequested is returned by Parse when --help/-h is passed. pflag has
+// already printed the usage text, so the caller should exit 0 without printing
+// an error. IMP-CLI-035
+var ErrHelpRequested = errors.New("help requested")
+
 const (
 	defaultTimeout       = 30 * time.Second
 	defaultMaxRetries    = 5
@@ -161,6 +166,11 @@ func Parse(args []string, getenv envFunc, stdinIsTTY ttyFunc) (*Config, error) {
 			"to detect GitOps self-healing before creating the scan config")
 
 	if err := fs.Parse(args); err != nil {
+		// IMP-CLI-035: --help/-h is a successful invocation, not an error.
+		// pflag already printed the usage text; signal a clean exit.
+		if errors.Is(err, flag.ErrHelp) {
+			return nil, ErrHelpRequested
+		}
 		return nil, fmt.Errorf("flag parse error: %w", err)
 	}
 
