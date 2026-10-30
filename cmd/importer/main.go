@@ -41,6 +41,10 @@ func runMain() int {
 		return config.ExitConfigError
 	}
 
+	// IMP-CLI-025: print any non-fatal config notices (e.g. overlapping
+	// auth vars) before doing anything else.
+	status.PrintWarnings(os.Stderr, cfg.Warnings)
+
 	// IMP-CLI-029: --list-ssbs skips ACS entirely.
 	if cfg.ListSSBs {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
