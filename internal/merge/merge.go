@@ -15,10 +15,28 @@ import (
 
 // ClusterSSB represents an SSB from a specific cluster context.
 type ClusterSSB struct {
-	Context   string
-	ClusterID string
-	SSB       *models.ScanSettingBinding
-	Schedule  string
+	Context string
+	// KubeconfigFile is the path of the kubeconfig file Context was loaded
+	// from. IMP-CLI-003a: two sources can share the same bare Context name
+	// (e.g. both named "admin") when they come from different kubeconfig
+	// files, so KubeconfigFile (together with ClusterID) disambiguates
+	// which side a conflict message refers to.
+	KubeconfigFile string
+	ClusterID      string
+	SSB            *models.ScanSettingBinding
+	Schedule       string
+}
+
+// sourceLabel formats a ClusterSSB's origin unambiguously for conflict
+// messages: the kubeconfig file, the bare context name, and the resolved
+// ACS cluster ID. IMP-CLI-003a: the bare context name alone is not
+// sufficient when two sources share the same context name.
+func sourceLabel(c ClusterSSB) string {
+	kc := c.KubeconfigFile
+	if kc == "" {
+		kc = "<unknown kubeconfig>"
+	}
+	return fmt.Sprintf("%s:%s (cluster %s)", kc, c.Context, c.ClusterID)
 }
 
 // MergedConfig is the result of merging same-name SSBs across clusters.
@@ -76,7 +94,7 @@ func MergeSSBs(inputs []ClusterSSB) ([]MergedConfig, *problems.Collector) {
 					ResourceRef: name,
 					Description: fmt.Sprintf(
 						"ScanSettingBinding %q has profile mismatch across clusters: %s has %v, %s has %v",
-						name, ref.Context, refProfiles, entry.Context, entryProfiles,
+						name, sourceLabel(ref), refProfiles, sourceLabel(entry), entryProfiles,
 					),
 					Skipped: true,
 				})
@@ -92,7 +110,7 @@ func MergeSSBs(inputs []ClusterSSB) ([]MergedConfig, *problems.Collector) {
 					ResourceRef: name,
 					Description: fmt.Sprintf(
 						"ScanSettingBinding %q has schedule mismatch across clusters: %s has %q, %s has %q",
-						name, ref.Context, refSchedule, entry.Context, entry.Schedule,
+						name, sourceLabel(ref), refSchedule, sourceLabel(entry), entry.Schedule,
 					),
 					Skipped: true,
 				})

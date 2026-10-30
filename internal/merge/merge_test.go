@@ -1,6 +1,7 @@
 package merge
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stackrox/co-importer/internal/models"
@@ -147,6 +148,50 @@ func TestMergeSSBs_OutputOrderPreserved(t *testing.T) {
 		if r.ScanName != want[i] {
 			t.Errorf("result[%d]: got %q, want %q", i, r.ScanName, want[i])
 		}
+	}
+}
+
+// TestMergeSSBs_ProfileMismatch_SameContextNameDifferentCluster is a
+// regression test for IMP-CLI-003a: when two sources share the same bare
+// kubecontext name (e.g. both called "admin", from different kubeconfig
+// files), a conflict message MUST still distinguish the two sides. The bare
+// Context alone is not sufficient, so the message must include a
+// disambiguating identifier for each side (ClusterID and/or
+// KubeconfigFile), not just the repeated context name.
+func TestMergeSSBs_ProfileMismatch_SameContextNameDifferentCluster(t *testing.T) {
+	inputs := []ClusterSSB{
+		{
+			Context:        "admin",
+			ClusterID:      "cluster-a-uuid",
+			KubeconfigFile: "/kube/configs/cluster-a.yaml",
+			SSB:            ssb("cis-weekly", "ocp4-cis"),
+			Schedule:       "0 2 * * *",
+		},
+		{
+			Context:        "admin",
+			ClusterID:      "cluster-b-uuid",
+			KubeconfigFile: "/kube/configs/cluster-b.yaml",
+			SSB:            ssb("cis-weekly", "ocp4-pci-dss"),
+			Schedule:       "0 2 * * *",
+		},
+	}
+
+	results, collector := MergeSSBs(inputs)
+
+	if len(results) != 0 {
+		t.Errorf("expected 0 results on mismatch, got %d", len(results))
+	}
+	probs := collector.ForResource("cis-weekly")
+	if len(probs) == 0 {
+		t.Fatal("expected a conflict problem for cis-weekly, got none")
+	}
+	msg := probs[0].Description
+
+	// The bare context name "admin" is identical on both sides, so the
+	// message must carry a distinguishing identifier for each side (here,
+	// the ACS cluster ID) rather than "admin ... admin".
+	if !strings.Contains(msg, "cluster-a-uuid") || !strings.Contains(msg, "cluster-b-uuid") {
+		t.Errorf("expected conflict message to distinguish same-named contexts by cluster ID, got: %q", msg)
 	}
 }
 
