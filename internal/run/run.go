@@ -158,6 +158,12 @@ func (r *Runner) Run(ctx context.Context) int {
 
 	totalDiscovered := 0
 
+	// brokenBindingItems holds per-binding failures discovered before merge
+	// (e.g. a binding whose referenced ScanSetting cannot be fetched). They
+	// must surface as failed items and count toward counts.failed, not just
+	// vanish after being counted in discovered (IMP-ACC-008, IMP-MAP-008).
+	var brokenBindingItems []report.Item
+
 	for _, src := range sources {
 		ssbs, fetchErr := src.coClient.ListScanSettingBindings(ctx)
 		if fetchErr != nil {
@@ -197,6 +203,20 @@ func (r *Runner) Run(ctx context.Context) int {
 					Description: fmt.Sprintf("ScanSettingBinding %q references ScanSetting %q which could not be fetched: %v", ref, ssb.ScanSettingName, ssErr),
 					FixHint:     fmt.Sprintf("Create ScanSetting %q or update the binding to reference an existing ScanSetting", ssb.ScanSettingName),
 					Skipped:     true,
+				})
+				// IMP-ACC-008, IMP-MAP-008: a binding whose ScanSetting is
+				// missing fails only itself. Record it as a failed item so it
+				// counts toward counts.failed and drives exit code 2, instead
+				// of silently dropping out after being counted as discovered.
+				brokenBindingItems = append(brokenBindingItems, report.Item{
+					Source: report.ItemSource{
+						Namespace:       ns,
+						BindingName:     ssb.Name,
+						ScanSettingName: ssb.ScanSettingName,
+					},
+					Action: "fail",
+					Reason: fmt.Sprintf("ScanSetting %q could not be fetched: %v", ssb.ScanSettingName, ssErr),
+					Error:  ssErr.Error(),
 				})
 				continue
 			}
@@ -270,6 +290,16 @@ func (r *Runner) Run(ctx context.Context) int {
 			Action: "fail",
 			Reason: fmt.Sprintf("cross-cluster conflict: ScanSettingBinding %q has mismatched profiles or schedule across clusters", cs.SSB.Name),
 		})
+	}
+
+	// IMP-ACC-008, IMP-MAP-008: fold in per-binding failures found during
+	// discovery (e.g. missing ScanSetting) so they appear in items[] and
+	// counts.failed, keeping counts.discovered reconciled with the outcome
+	// counts and driving exit code 2.
+	for _, bi := range brokenBindingItems {
+		failCount++
+		seenScanNames[bi.Source.BindingName] = true
+		items = append(items, bi)
 	}
 
 	// adoptK8s/confirmer back the adopt-external workflow with real K8s
