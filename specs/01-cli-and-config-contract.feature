@@ -366,6 +366,12 @@ Feature: CLI and configuration contract
     Then config parsing succeeds
     And list-ssbs is enabled
 
+  # IMP-CLI-029: --list-ssbs never contacts ACS, so no endpoint is required.
+  Scenario: --list-ssbs succeeds without an endpoint
+    When I parse config with flags "--list-ssbs"
+    Then config parsing succeeds
+    And list-ssbs is enabled
+
   # ─── IMP-CLI-030, IMP-CLI-031: --delete-existing / --yes ────────────────────
 
   # IMP-CLI-030

@@ -28,6 +28,12 @@ Define the importer interface so it can be implemented and tested predictably.
     each context as a separate source cluster.
   - when the same context name appears in multiple files, both are processed
     independently with their own credentials.
+  - **IMP-CLI-003a**: when a report or console message identifies a source cluster
+    (e.g. a cross-cluster conflict message, IMP-MAP-020a), it MUST identify each
+    side unambiguously even when two sources share the same context name. The
+    bare context name alone is NOT sufficient. The message MUST include a
+    distinguishing identifier — the originating kubeconfig file path, the resolved
+    ACS cluster ID, or both — so the two sides are distinguishable.
   - `--context <name>` (repeatable, optional): filters which contexts to use. Matches
     against context names across all files. When given, only matching contexts are
     processed; all others are skipped.
@@ -56,6 +62,8 @@ Define the importer interface so it can be implemented and tested predictably.
   line, sorted), then exits with code 0.
   - `--exclude` filtering applies to the list.
   - ACS preflight is skipped (no ACS credentials required).
+  - `--endpoint`/`ROX_ENDPOINT` is NOT required: `--list-ssbs` never contacts ACS, so
+    config parsing MUST succeed with no endpoint set.
   - `--dry-run` has no additional effect (the flag is implicitly read-only).
 - **IMP-CLI-024**: for basic mode:
   - username is read from `--username` flag or `ROX_ADMIN_USER` env var (default `admin`).
