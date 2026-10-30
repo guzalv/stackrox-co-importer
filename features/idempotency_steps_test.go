@@ -201,13 +201,17 @@ func importerExecutesInApplyMode() error {
 			Description: itc.result.Reason,
 		})
 	}
-	// If failed, record as a problem
+	// If failed, record as a problem. IMP-CLI-022: every problems[] entry
+	// MUST include a fixHint, mirroring internal/run's logAndRecordResult
+	// ("fail" branch, apiFailureFixHint) since this is a test-only
+	// reimplementation of the same reconcile-result-to-problem mapping.
 	if itc.result.Action == "fail" {
 		itc.problems.Add(problems.Problem{
 			Severity:    "error",
 			Category:    "acs-error",
 			ResourceRef: itc.payload.ScanName,
 			Description: itc.result.Reason,
+			FixHint:     "Check ACS connectivity and the scan configuration payload; see the error above, then re-run the importer.",
 			Skipped:     true,
 		})
 	}
@@ -406,13 +410,22 @@ func operationMustNotBeRetried() error {
 	return nil
 }
 
-// IMP-ERR-002: verify item skipped and recorded as problem
+// IMP-ERR-002, IMP-CLI-022: verify item skipped and recorded as problem with
+// a non-empty fixHint. IMP-CLI-022 requires every problems[] entry to
+// include a fixHint, not just a description, so the operator knows what to
+// do about the failure.
 func itemMustBeSkippedAndRecorded() error {
 	if itc.result.Action != "fail" {
 		return fmt.Errorf("expected action 'fail', got %q", itc.result.Action)
 	}
-	if len(itc.problems.All()) == 0 {
+	all := itc.problems.All()
+	if len(all) == 0 {
 		return fmt.Errorf("expected item to be recorded as a problem, but problems list is empty")
+	}
+	for _, p := range all {
+		if p.ResourceRef == itc.payload.ScanName && p.FixHint == "" {
+			return fmt.Errorf("expected problem for %q to have a non-empty FixHint (IMP-CLI-022), got empty", p.ResourceRef)
+		}
 	}
 	return nil
 }
