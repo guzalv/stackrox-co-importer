@@ -105,7 +105,7 @@ func importerMustProceedToCreateACSScanConfig(name string) error {
 	// proceed: ResolveBlocker reported the blockers are confirmed gone, and
 	// the scan was not skipped.
 	if mtc.adextResolveErr != nil {
-		return fmt.Errorf("expected no error resolving %q's blockers, got: %v", name, mtc.adextResolveErr)
+		return fmt.Errorf("expected no error resolving %q's blockers, got: %w", name, mtc.adextResolveErr)
 	}
 	if !mtc.adextDeleted {
 		return fmt.Errorf("expected %q's blockers to be confirmed gone so the create may proceed, but ResolveBlocker reported they were not", name)

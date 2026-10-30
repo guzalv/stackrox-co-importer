@@ -298,7 +298,7 @@ func importerMustFailWithBackupDirNotEmptyError() error {
 		return fmt.Errorf("expected the importer to fail, but CheckBackupDir returned nil")
 	}
 	if !strings.Contains(mtc.startupErr.Error(), "not empty") {
-		return fmt.Errorf("expected error to mention the backup directory is not empty, got: %v", mtc.startupErr)
+		return fmt.Errorf("expected error to mention the backup directory is not empty, got: %w", mtc.startupErr)
 	}
 	return nil
 }

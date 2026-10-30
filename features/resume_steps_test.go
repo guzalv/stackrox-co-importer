@@ -148,10 +148,10 @@ func theImporterStartsWithTheSameBackupDir() error {
 
 func importerMustUseThePersistedPlan() error {
 	if mtc.adextResumeLoadErr != nil {
-		return fmt.Errorf("expected LoadPlan to succeed, got: %v", mtc.adextResumeLoadErr)
+		return fmt.Errorf("expected LoadPlan to succeed, got: %w", mtc.adextResumeLoadErr)
 	}
 	if mtc.adextResumeEnvErr != nil {
-		return fmt.Errorf("expected environment validation to succeed, got: %v", mtc.adextResumeEnvErr)
+		return fmt.Errorf("expected environment validation to succeed, got: %w", mtc.adextResumeEnvErr)
 	}
 	if !mtc.adextResumeUsedPlan {
 		return fmt.Errorf("expected the importer to resume from the persisted plan, but it did not")
@@ -199,7 +199,7 @@ func configOrStartupMustFailWithEnvironmentMismatch() error {
 		return fmt.Errorf("expected startup to fail, but got nil error")
 	}
 	if !strings.Contains(mtc.startupErr.Error(), "environment") {
-		return fmt.Errorf("expected error to mention environment mismatch, got: %v", mtc.startupErr)
+		return fmt.Errorf("expected error to mention environment mismatch, got: %w", mtc.startupErr)
 	}
 	return nil
 }
