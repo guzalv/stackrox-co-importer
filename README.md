@@ -152,7 +152,9 @@ The importer infers the authentication mode from environment variables:
 | `ROX_API_TOKEN`      | Token     | Recommended. Set the token value.     |
 | `ROX_ADMIN_PASSWORD` | Basic     | Used with `ROX_ADMIN_USER` (default: `admin`). |
 
-Setting both `ROX_API_TOKEN` and `ROX_ADMIN_PASSWORD` is an error (ambiguous).
+If both `ROX_API_TOKEN` and `ROX_ADMIN_PASSWORD` are set, the importer uses
+token auth and prints a warning to stderr. If neither is set, it exits with an
+error listing both options. (`--list-ssbs` needs no credentials at all.)
 
 ### Flags
 
