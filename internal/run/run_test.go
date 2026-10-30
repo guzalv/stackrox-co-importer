@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/guzalv/stackrox-co-importer/internal/acs"
@@ -58,6 +60,9 @@ func (f *fakeACSClient) ListClusters(_ context.Context) ([]acs.ACSClusterInfo, e
 type fakeCOClient struct {
 	ssbs         []models.ScanSettingBinding
 	scanSettings map[string]*models.ScanSetting
+	// missingScanSettings: names for which GetScanSetting returns an error,
+	// simulating a binding that references a ScanSetting that doesn't exist.
+	missingScanSettings map[string]bool
 }
 
 func (f *fakeCOClient) ListScanSettingBindings(_ context.Context) ([]models.ScanSettingBinding, error) {
@@ -65,6 +70,9 @@ func (f *fakeCOClient) ListScanSettingBindings(_ context.Context) ([]models.Scan
 }
 
 func (f *fakeCOClient) GetScanSetting(_ context.Context, namespace, name string) (*models.ScanSetting, error) {
+	if f.missingScanSettings[name] {
+		return nil, fmt.Errorf("scansettings %q not found", name)
+	}
 	if ss, ok := f.scanSettings[name]; ok {
 		return ss, nil
 	}
@@ -136,6 +144,11 @@ func ssbRef(name string, profiles ...string) models.ScanSettingBinding {
 // be skipped. This test drives the real buildClusterSources via a temp
 // kubeconfig (clients are lazy, so no real connection happens) and asserts
 // ListSSBs returns without panicking.
+//
+// IMP-ACC-023 (exit-0 half): asserts ListSSBs returns ExitSuccess.
+// IMP-ACC-024: the Runner here is built with acsClient == nil (no ACS
+// credentials configured at all), confirming --list-ssbs succeeds without
+// any ACS client/credentials.
 func TestIMP_CLI_029_ListSSBsWithoutACSDoesNotPanic(t *testing.T) {
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
 	// Minimal, structurally valid kubeconfig with one context. The server is
@@ -238,6 +251,10 @@ func TestIMP_ACC_026_ExcludeCountsTowardDiscoveredNotProcessed(t *testing.T) {
 // counts.discovered == counts.created + counts.skipped + counts.failed
 // still holds (IMP-MAP-020b). The existing merge-level "conflict" problem
 // (IMP-MAP-020) must still be recorded too.
+//
+// IMP-ACC-016: this is the full-pipeline (discover->merge->report) check that
+// same-name SSBs across clusters with mismatched profiles produce an error
+// for that SSB name, surfaced via items[]/counts/problems[].
 func TestIMP_MAP_020b_CrossClusterConflictAppearsInItemsAndCounts(t *testing.T) {
 	ssbA := ssbRef("cis-weekly", "ocp4-cis")
 	ssbB := ssbRef("cis-weekly", "ocp4-cis", "ocp4-moderate") // mismatched profiles
@@ -289,5 +306,93 @@ func TestIMP_MAP_020b_CrossClusterConflictAppearsInItemsAndCounts(t *testing.T) 
 	}
 	if !foundConflictProblem {
 		t.Error("expected the existing IMP-MAP-020 conflict problem to still be recorded")
+	}
+}
+
+// TestIMP_ACC_008_BrokenBindingFailsOnlyItself verifies that a binding whose
+// referenced ScanSetting cannot be fetched fails only itself: it appears in
+// items[] with action "fail", counts toward counts.failed (keeping
+// discovered == created+skipped+failed), records a problem with a fixHint, and
+// does not stop the other, valid binding from being processed. IMP-ACC-008,
+// IMP-MAP-008..011. This is the full-pipeline counterpart to the merge-level
+// Godog scenario; before the fix the broken binding was counted as discovered
+// but silently dropped from items[]/counts.failed, so a run with only a broken
+// binding exited 0 instead of 2.
+func TestIMP_ACC_008_BrokenBindingFailsOnlyItself(t *testing.T) {
+	good := ssbRef("good-binding", "ocp4-cis")
+	good.ScanSettingName = "default"
+	broken := ssbRef("broken-binding", "ocp4-cis")
+	broken.ScanSettingName = "does-not-exist"
+
+	cfg := &config.Config{
+		DryRun:     true,
+		ReportJSON: filepath.Join(t.TempDir(), "report.json"),
+	}
+	src := clusterSource{
+		kubeconfigFile: "/fake/kubeconfig-ctx-a",
+		contextName:    "ctx-a",
+		clusterID:      "cluster-a",
+		coClient: &fakeCOClient{
+			ssbs:                []models.ScanSettingBinding{good, broken},
+			scanSettings:        map[string]*models.ScanSetting{},
+			missingScanSettings: map[string]bool{"does-not-exist": true},
+		},
+	}
+	runner := newTestRunner(cfg, newFakeACSClient(), []clusterSource{src})
+
+	exitCode := runner.Run(context.Background())
+	if exitCode != ExitPartialError {
+		t.Fatalf("expected exit code %d (partial: a binding failed), got %d", ExitPartialError, exitCode)
+	}
+
+	rep := readReport(t, cfg.ReportJSON)
+	if rep.Counts.Discovered != 2 {
+		t.Fatalf("expected discovered=2, got %d", rep.Counts.Discovered)
+	}
+	if rep.Counts.Failed != 1 {
+		t.Fatalf("expected failed=1 (only the broken binding), got %d", rep.Counts.Failed)
+	}
+	sum := rep.Counts.Create + rep.Counts.Skip + rep.Counts.Failed
+	if sum != rep.Counts.Discovered {
+		t.Fatalf("counts do not reconcile: discovered=%d != create(%d)+skip(%d)+failed(%d)=%d",
+			rep.Counts.Discovered, rep.Counts.Create, rep.Counts.Skip, rep.Counts.Failed, sum)
+	}
+
+	var brokenItem *report.Item
+	for i := range rep.Items {
+		if rep.Items[i].Source.BindingName == "broken-binding" {
+			brokenItem = &rep.Items[i]
+		}
+	}
+	if brokenItem == nil {
+		t.Fatal("expected a items[] entry for broken-binding, found none")
+	}
+	if brokenItem.Action != "fail" {
+		t.Errorf("expected action=fail for broken-binding, got %q", brokenItem.Action)
+	}
+
+	foundProblem := false
+	for _, p := range rep.Problems {
+		if strings.Contains(p.ResourceRef, "broken-binding") {
+			foundProblem = true
+			if p.FixHint == "" {
+				t.Error("broken-binding problem has empty fixHint (IMP-MAP-011)")
+			}
+		}
+	}
+	if !foundProblem {
+		t.Error("expected a problems[] entry for broken-binding")
+	}
+
+	// The valid binding must still have been processed (not blocked by the
+	// broken one): it should appear as a non-fail item.
+	foundGood := false
+	for _, item := range rep.Items {
+		if item.Source.BindingName == "good-binding" && item.Action != "fail" {
+			foundGood = true
+		}
+	}
+	if !foundGood {
+		t.Error("expected good-binding to still be processed despite the broken binding")
 	}
 }
