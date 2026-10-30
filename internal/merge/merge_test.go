@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stackrox/co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
 )
 
 func ssb(name string, profiles ...string) *models.ScanSettingBinding {

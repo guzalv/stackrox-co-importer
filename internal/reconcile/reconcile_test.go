@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/stackrox/co-importer/internal/acs"
-	"github.com/stackrox/co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/acs"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
 )
 
 // fakeACSClient implements acs.Client for reconcile tests.

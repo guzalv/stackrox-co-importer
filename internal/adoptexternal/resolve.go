@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stackrox/co-importer/internal/merge"
-	"github.com/stackrox/co-importer/internal/problems"
+	"github.com/guzalv/stackrox-co-importer/internal/merge"
+	"github.com/guzalv/stackrox-co-importer/internal/problems"
 )
 
 // Deleter abstracts the K8s delete operation needed to remove a blocking

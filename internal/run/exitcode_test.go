@@ -3,7 +3,7 @@ package run
 import (
 	"testing"
 
-	"github.com/stackrox/co-importer/internal/problems"
+	"github.com/guzalv/stackrox-co-importer/internal/problems"
 )
 
 // TestIMP_CLI_019_ExitCodeForRun verifies the exit code decision: any failed

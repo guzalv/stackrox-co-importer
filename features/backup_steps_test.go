@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	"github.com/cucumber/godog"
-	"github.com/stackrox/co-importer/internal/adoptexternal"
-	"github.com/stackrox/co-importer/internal/merge"
-	"github.com/stackrox/co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/adoptexternal"
+	"github.com/guzalv/stackrox-co-importer/internal/merge"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
 	"sigs.k8s.io/yaml"
 )
 

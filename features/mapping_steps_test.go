@@ -10,13 +10,13 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	"github.com/stackrox/co-importer/internal/adoptexternal"
-	"github.com/stackrox/co-importer/internal/discover"
-	"github.com/stackrox/co-importer/internal/mapping"
-	"github.com/stackrox/co-importer/internal/merge"
-	"github.com/stackrox/co-importer/internal/models"
-	"github.com/stackrox/co-importer/internal/problems"
-	"github.com/stackrox/co-importer/internal/reconcile"
+	"github.com/guzalv/stackrox-co-importer/internal/adoptexternal"
+	"github.com/guzalv/stackrox-co-importer/internal/discover"
+	"github.com/guzalv/stackrox-co-importer/internal/mapping"
+	"github.com/guzalv/stackrox-co-importer/internal/merge"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/problems"
+	"github.com/guzalv/stackrox-co-importer/internal/reconcile"
 )
 
 // --- Fake types for cluster discovery ---

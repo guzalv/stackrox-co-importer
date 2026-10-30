@@ -1,4 +1,4 @@
-module github.com/stackrox/co-importer
+module github.com/guzalv/stackrox-co-importer
 
 go 1.26.0
 

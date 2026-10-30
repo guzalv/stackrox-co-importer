@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stackrox/co-importer/internal/acs"
-	"github.com/stackrox/co-importer/internal/config"
-	"github.com/stackrox/co-importer/internal/models"
-	"github.com/stackrox/co-importer/internal/problems"
-	"github.com/stackrox/co-importer/internal/report"
-	"github.com/stackrox/co-importer/internal/status"
+	"github.com/guzalv/stackrox-co-importer/internal/acs"
+	"github.com/guzalv/stackrox-co-importer/internal/config"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/problems"
+	"github.com/guzalv/stackrox-co-importer/internal/report"
+	"github.com/guzalv/stackrox-co-importer/internal/status"
 )
 
 // --- Fakes for full-pipeline (Runner.Run) integration tests. ---

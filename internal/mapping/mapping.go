@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/stackrox/co-importer/internal/models"
-	"github.com/stackrox/co-importer/internal/problems"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/problems"
 )
 
 // MappingResult is returned per ScanSettingBinding.

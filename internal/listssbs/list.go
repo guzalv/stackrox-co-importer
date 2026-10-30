@@ -6,7 +6,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/stackrox/co-importer/internal/models"
+	"github.com/guzalv/stackrox-co-importer/internal/models"
 )
 
 // Print writes one "namespace/name" line per SSB to w, sorted lexicographically.
