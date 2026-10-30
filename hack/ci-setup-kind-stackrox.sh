@@ -165,22 +165,37 @@ kubectl wait --for=condition=Established crd/scansettingbindings.compliance.open
 kubectl wait --for=condition=Established crd/scansettings.compliance.openshift.io --timeout=30s
 kubectl wait --for=condition=Established crd/profiles.compliance.openshift.io --timeout=30s
 
-# Check if the operator created profiles; if not, create a test profile.
+# Check if the operator created profiles; if not, create the test profiles the
+# e2e suite references. The generic-platform install has no ProfileBundle, so no
+# real profiles appear. ACS's validateScan rejects a scan config whose profiles
+# don't exist as synced Profile CRs for the cluster ("Unable to find all
+# profiles..."), so every profile name used by e2e/acceptance_test.go must exist
+# here. Keep this list in sync with the profile names in that file.
 echo "==> Checking for Profiles..."
 PROFILE_COUNT=$(kubectl get profiles.compliance.openshift.io -n "${CO_NAMESPACE}" --no-headers 2>/dev/null | wc -l || echo "0")
 if [ "${PROFILE_COUNT}" -eq 0 ]; then
-  echo "    No profiles found (operator may still be initializing). Creating test profile..."
-  cat <<EOF | kubectl apply -f -
+  echo "    No profiles found (operator may still be initializing). Creating test profiles..."
+  for entry in \
+    "ocp4-cis:xccdf_org.ssgproject.content_profile_cis:CIS OpenShift Benchmark" \
+    "ocp4-pci-dss:xccdf_org.ssgproject.content_profile_pci-dss:PCI-DSS v4 Control Baseline" \
+    "ocp4-moderate:xccdf_org.ssgproject.content_profile_moderate:NIST 800-53 Moderate-Impact Baseline" \
+    "ocp4-e8:xccdf_org.ssgproject.content_profile_e8:Australian Cyber Security Centre Essential Eight"; do
+    name="${entry%%:*}"
+    rest="${entry#*:}"
+    xccdf_id="${rest%%:*}"
+    title="${rest#*:}"
+    cat <<EOF | kubectl apply -f -
 apiVersion: compliance.openshift.io/v1alpha1
 kind: Profile
 metadata:
-  name: ocp4-cis
+  name: ${name}
   namespace: ${CO_NAMESPACE}
-id: xccdf_org.ssgproject.content_profile_cis
-title: CIS OpenShift Benchmark
+id: ${xccdf_id}
+title: ${title}
 description: Test profile for CI e2e
 rules: []
 EOF
+  done
 else
   echo "    Found ${PROFILE_COUNT} profile(s) from the operator"
 fi
@@ -206,20 +221,24 @@ done
 
 # ── 7. Wait for ACS to sync compliance profiles from sensor ──────────────
 
+# The e2e suite references 4 profiles (ocp4-cis, ocp4-pci-dss, ocp4-moderate,
+# ocp4-e8). Wait until all of them are synced to ACS, not just the first one, so
+# tests don't race a partial sync and hit "Unable to find all profiles".
+EXPECTED_PROFILES=4
 echo "==> Waiting for compliance profiles to appear in ACS..."
 if [ -n "${CLUSTER_ID}" ]; then
   for i in $(seq 1 60); do
     PROFILE_RESP=$(curl -ksS -u "admin:${ROX_ADMIN_PASSWORD}" \
       "${ROX_ENDPOINT}/v2/compliance/profiles/cluster?cluster_id=${CLUSTER_ID}" 2>/dev/null || true)
     PROFILE_COUNT=$(echo "${PROFILE_RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('profiles',[])))" 2>/dev/null || echo "0")
-    if [ "${PROFILE_COUNT}" -gt 0 ]; then
+    if [ "${PROFILE_COUNT}" -ge "${EXPECTED_PROFILES}" ]; then
       echo "    Found ${PROFILE_COUNT} profile(s) synced to ACS for cluster ${CLUSTER_ID}"
       # List profile names for debugging.
       echo "${PROFILE_RESP}" | python3 -c "import sys,json; [print('    -',p.get('name','?')) for p in json.load(sys.stdin).get('profiles',[])]" 2>/dev/null || true
       break
     fi
     if [ "$i" -eq 60 ]; then
-      echo "WARNING: No compliance profiles synced to ACS after 5 minutes"
+      echo "WARNING: Only ${PROFILE_COUNT}/${EXPECTED_PROFILES} compliance profiles synced to ACS after 5 minutes"
       echo "    This may cause e2e tests that create scan configs to fail"
       echo "    API response: ${PROFILE_RESP}"
     fi
