@@ -96,7 +96,7 @@ make build
 # Build for your local architecture
 make image
 
-# Or pull a pre-built image (when available)
+# Or pull the pre-built image
 docker pull ghcr.io/guzalv/stackrox-co-importer:latest
 ```
 
@@ -187,7 +187,7 @@ error listing both options. (`--list-ssbs` needs no credentials at all.)
 |------|------------------------------------------------|
 | `0`  | All bindings processed successfully.           |
 | `1`  | Fatal configuration or preflight error.        |
-| `2`  | Partial success (some bindings failed).        |
+| `2`  | Some bindings failed, **or** a create was skipped because it was blocked by an external ScanSettingBinding (a `gitops` problem). A requested import did not fully happen — see `problems[]`. |
 
 ### Multi-cluster usage
 
@@ -272,10 +272,11 @@ how to proceed. You have two options:
 
 Add `--yes` to skip the interactive prompt (required for non-interactive use —
 the importer refuses `--delete-existing` without `--yes` when stdin isn't a
-terminal). Before deleting anything, the importer writes a full YAML backup of
-every binding (and its referenced `ScanSetting`) it's about to delete, plus a
-resumable plan, to `--backup-dir` (default: a timestamped directory in the
-current working directory).
+terminal). Before deleting anything, the importer writes a YAML record of every
+binding (and its referenced `ScanSetting`) it's about to delete — the identity
+and key fields, not a round-trippable Kubernetes manifest — plus a resumable
+plan, to `--backup-dir` (default: a timestamped directory in the current working
+directory).
 
 **Option 2 — remove it yourself** (e.g. delete it from your GitOps source and
 let the tool prune it, or `oc delete` it directly), then re-run the importer
@@ -316,9 +317,14 @@ Use `--report-json` to produce a machine-readable report:
 ./bin/compliance-operator-importer --report-json report.json
 ```
 
-The report includes metadata, counts (discovered/created/skipped/failed), per-
-binding details, and a `problems` array with descriptions and fix hints for
-any issues encountered.
+The report includes metadata, counts (`discovered`, `create`, `skip`,
+`failed`), per-binding details, and a `problems` array with descriptions and fix
+hints for any issues encountered.
+
+`discovered` is the total number of bindings found before filtering, so it
+includes bindings that produce no `items[]` entry — those removed by `--exclude`
+and the stackrox-labeled bindings the importer never re-imports. As a result
+`discovered` can be larger than `create + skip + failed`.
 
 ## Development
 
@@ -374,9 +380,9 @@ Every push to `main` runs the following pipeline:
 1. **Lint** -- golangci-lint with a curated set of linters.
 2. **Test** -- Godog scenarios and unit tests.
 3. **Build** -- binary compilation and container image build.
-4. **E2E** -- spins up a kind cluster with StackRox (lightweight mode) and
-   fake Compliance Operator CRDs, then runs acceptance tests against real
-   APIs.
+4. **E2E** -- spins up a kind cluster with StackRox (lightweight mode) and the
+   real Compliance Operator (generic-platform mode; falls back to CRDs-only if
+   the operator install fails), then runs acceptance tests against real APIs.
 5. **Release** -- if e2e passes on `main`, auto-increments the patch version,
    creates a Git tag, and publishes multi-arch binaries and container images
    via GoReleaser.
