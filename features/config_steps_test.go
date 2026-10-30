@@ -62,7 +62,7 @@ func (c *configTestCtx) configParsingFails() error {
 // error).
 func (c *configTestCtx) configParsingRequestsHelp() error {
 	if !errors.Is(c.err, config.ErrHelpRequested) {
-		return fmt.Errorf("expected config.ErrHelpRequested, got: %v (cfg=%+v)", c.err, c.cfg)
+		return fmt.Errorf("expected config.ErrHelpRequested, got: %w (cfg=%+v)", c.err, c.cfg)
 	}
 	return nil
 }
