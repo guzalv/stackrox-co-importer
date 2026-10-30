@@ -1,5 +1,10 @@
 # Compliance Operator to ACS Importer
 
+> **Unofficial community tool.** This is a personal/community stopgap project,
+> not an official Red Hat or StackRox product. It is not supported, endorsed, or
+> maintained by Red Hat. Use it at your own risk. For the supported solution,
+> track the Compliance Observer paradigm work in upstream StackRox.
+
 A CLI tool that reads [Compliance Operator][co] scheduled-scan resources from
 OpenShift clusters and creates equivalent scan configurations in
 [Red Hat Advanced Cluster Security (ACS / StackRox)][acs].
@@ -70,7 +75,7 @@ but never modifies them.
 
 ### Local tools
 
-- Go 1.23+ (to build from source)
+- Go 1.26+ (to build from source)
 - `kubectl` or `oc` configured with kubeconfigs for your target clusters
 - `docker` or `podman` (only if building/running the container image)
 
@@ -95,6 +100,21 @@ make image
 docker pull ghcr.io/guzalv/stackrox-co-importer:latest
 ```
 
+Run the image, passing credentials as env vars and mounting your kubeconfig so
+the tool can read Compliance Operator resources:
+
+```bash
+docker run --rm \
+  -e ROX_ENDPOINT="https://central.example.com:443" \
+  -e ROX_API_TOKEN="your-token-here" \
+  -v "$HOME/.kube/config:/kubeconfig:ro" \
+  -e KUBECONFIG=/kubeconfig \
+  ghcr.io/guzalv/stackrox-co-importer:latest --dry-run
+```
+
+To trust a self-signed Central CA, mount the CA file too and add
+`--ca-cert-file /ca.pem` (or pass `--insecure-skip-verify` for dev/test).
+
 ## Usage
 
 ### Quick start
@@ -109,6 +129,18 @@ export ROX_API_TOKEN="your-token-here"
 
 # Import scan configurations
 ./bin/compliance-operator-importer
+```
+
+**TLS note:** most ACS Central deployments use a self-signed certificate. Out of
+the box the importer verifies the server certificate, so against a self-signed
+Central you must either trust its CA or skip verification:
+
+```bash
+# Option 1 (recommended): trust Central's CA bundle
+./bin/compliance-operator-importer --ca-cert-file ./central-ca.pem
+
+# Option 2 (dev/test only): skip certificate verification
+./bin/compliance-operator-importer --insecure-skip-verify
 ```
 
 ### Authentication
@@ -144,6 +176,8 @@ Setting both `ROX_API_TOKEN` and `ROX_ADMIN_PASSWORD` is an error (ambiguous).
 | `--yes` / `-y`          | `false`                | Skip the confirmation prompt for `--delete-existing`. |
 | `--backup-dir <path>`   | `./co-importer-backup-<timestamp>` | Where backups and the resumable plan (`plan.json`) are written. Reusing a prior run's value resumes from it. |
 | `--settle-timeout`      | `5s`                   | How long to re-check a deleted `ScanSettingBinding` for GitOps self-heal before creating. |
+| `--help` / `-h`         |                        | Print usage and exit 0.                     |
+| `--version`             |                        | Print version and exit 0.                   |
 
 ### Exit codes
 
@@ -360,7 +394,11 @@ No manual tagging or release action is needed.
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+Licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
+
+This is an unofficial community project, not affiliated with or endorsed by
+Red Hat or the StackRox project. It is provided as-is, without warranty or
+support.
 
 [co]: https://docs.openshift.com/container-platform/latest/security/compliance_operator/co-overview.html
 [co-install]: https://docs.openshift.com/container-platform/latest/security/compliance_operator/co-install.html
