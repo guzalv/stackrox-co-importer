@@ -257,24 +257,28 @@ func inferAuthMode(cfg *Config, getenv envFunc) error {
 
 // validate checks cross-field invariants after flags and env vars are resolved.
 func validate(cfg *Config, stdinIsTTY ttyFunc) error {
-	// IMP-CLI-001: endpoint required
-	if cfg.Endpoint == "" {
-		return errors.New("--endpoint is required (or set ROX_ENDPOINT)")
-	}
+	// IMP-CLI-029: --list-ssbs never contacts ACS, so no endpoint is
+	// required and the endpoint/scheme checks below do not apply.
+	if !cfg.ListSSBs {
+		// IMP-CLI-001: endpoint required
+		if cfg.Endpoint == "" {
+			return errors.New("--endpoint is required (or set ROX_ENDPOINT)")
+		}
 
-	// IMP-CLI-013: scheme handling
-	if strings.HasPrefix(cfg.Endpoint, "http://") {
-		return fmt.Errorf(
-			"--endpoint must use HTTPS (got %q); use https:// or omit the scheme",
-			cfg.Endpoint,
-		)
-	}
-	if !strings.HasPrefix(cfg.Endpoint, "https://") {
-		cfg.Endpoint = "https://" + cfg.Endpoint
-	}
+		// IMP-CLI-013: scheme handling
+		if strings.HasPrefix(cfg.Endpoint, "http://") {
+			return fmt.Errorf(
+				"--endpoint must use HTTPS (got %q); use https:// or omit the scheme",
+				cfg.Endpoint,
+			)
+		}
+		if !strings.HasPrefix(cfg.Endpoint, "https://") {
+			cfg.Endpoint = "https://" + cfg.Endpoint
+		}
 
-	// Strip trailing slash for consistency.
-	cfg.Endpoint = strings.TrimRight(cfg.Endpoint, "/")
+		// Strip trailing slash for consistency.
+		cfg.Endpoint = strings.TrimRight(cfg.Endpoint, "/")
+	}
 
 	// IMP-CLI-014: auth material must be non-empty
 	switch cfg.AuthMode {
