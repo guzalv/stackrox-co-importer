@@ -140,9 +140,16 @@ CO_TMPDIR=$(mktemp -d)
 git clone --depth=1 https://github.com/ComplianceAsCode/compliance-operator.git "${CO_TMPDIR}/co"
 
 # Install via Helm with generic platform (non-OpenShift).
+# fullnameOverride is required: the chart's default fullname is
+# "compliance-operator-compliance-operator-chart", but Sensor looks up the
+# Compliance Operator by a Deployment named exactly "compliance-operator"
+# (pkg/complianceoperator/const.go). Without the override, Sensor never learns
+# the CO namespace and silently refuses to materialize the ScanSetting/
+# ScanSettingBinding when a scan config is created (breaks IMP-ACC-029).
 helm install compliance-operator "${CO_TMPDIR}/co/config/helm" \
   --namespace "${CO_NAMESPACE}" \
   --set platform=generic \
+  --set fullnameOverride=compliance-operator \
   --set nodeSelector=null \
   --set tolerations=null \
   --set replicas=1 \
