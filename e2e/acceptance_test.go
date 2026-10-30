@@ -1367,9 +1367,16 @@ func TestIMP_ACC_008_BrokenBindingFailsOnlyItself(t *testing.T) {
 	brokenSSBName := "e2e-broken-" + id
 	missingSettingName := "does-not-exist-" + id
 
-	// IMP-ACC-018: create own CO resources.
+	// IMP-ACC-018: create own CO resources. The valid and broken bindings use
+	// DIFFERENT profiles on purpose: the broken binding is a plain external
+	// SSB on the cluster, and if it shared a profile with the valid one, ACS's
+	// external-SSB conflict check (RHACS >=4.11/5.0) would reject the valid
+	// binding's create too — which would fail the valid binding for an
+	// unrelated reason and defeat the point of this test. The broken binding
+	// fails on its missing ScanSetting before any ACS call regardless of
+	// profile, so giving it a distinct profile isolates the two failures.
 	createScanSetting(t, ns, validSSName, "0 2 * * *")
-	createScanSettingBinding(t, ns, validSSBName, validSSName, []string{"ocp4-cis"})
+	createScanSettingBinding(t, ns, validSSBName, validSSName, []string{"ocp4-moderate"})
 	// Broken binding: references a ScanSetting that is deliberately never
 	// created.
 	createScanSettingBinding(t, ns, brokenSSBName, missingSettingName, []string{"ocp4-cis"})
