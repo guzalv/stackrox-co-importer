@@ -12,6 +12,7 @@ package run
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -61,15 +62,23 @@ type Runner struct {
 	cfg       *config.Config
 	acsClient acs.Client
 	printer   *status.Printer
+	// buildSources discovers cluster sources. It defaults to
+	// r.buildClusterSources (real kubeconfig-backed discovery); tests
+	// override it to inject fake clusterSources without touching a real
+	// kubeconfig, so the full discovery->merge->reconcile->report pipeline
+	// can be exercised with fakes (see run_test.go).
+	buildSources func(ctx context.Context, collector *problems.Collector) ([]clusterSource, error)
 }
 
 // NewRunner creates a new pipeline runner.
 func NewRunner(cfg *config.Config, acsClient acs.Client) *Runner {
-	return &Runner{
+	r := &Runner{
 		cfg:       cfg,
 		acsClient: acsClient,
 		printer:   status.New(),
 	}
+	r.buildSources = r.buildClusterSources
+	return r
 }
 
 // Run executes the full import pipeline and returns an exit code.
@@ -86,7 +95,7 @@ func (r *Runner) Run(ctx context.Context) int {
 
 	// Step 2: Build cluster sources
 	r.printer.Stage("Discovering cluster sources", "")
-	sources, err := r.buildClusterSources(ctx, collector)
+	sources, err := r.buildSources(ctx, collector)
 	if err != nil {
 		r.printer.Fail(fmt.Sprintf("failed to build cluster sources: %v", err))
 		return ExitFatalError
@@ -200,10 +209,11 @@ func (r *Runner) Run(ctx context.Context) int {
 			scanSettingsByBinding[src.contextName+"/"+ssb.Name] = ss
 
 			allClusterSSBs = append(allClusterSSBs, merge.ClusterSSB{
-				Context:   src.contextName,
-				ClusterID: src.clusterID,
-				SSB:       ssb,
-				Schedule:  ss.Schedule,
+				Context:        src.contextName,
+				KubeconfigFile: src.kubeconfigFile,
+				ClusterID:      src.clusterID,
+				SSB:            ssb,
+				Schedule:       ss.Schedule,
 			})
 		}
 	}
@@ -230,6 +240,37 @@ func (r *Runner) Run(ctx context.Context) int {
 
 	items := make([]report.Item, 0, len(mergedConfigs))
 	createCount, skipCount, failCount, updateCount := 0, 0, 0, 0
+	seenScanNames := make(map[string]bool)
+
+	// IMP-MAP-020b: a cross-cluster conflict (IMP-MAP-020, IMP-MAP-020a) is a
+	// per-binding failure. MergeSSBs already recorded one "conflict" problem
+	// per conflicted scanName and dropped it from mergedConfigs entirely, so
+	// without this it never appears in items[]/counts.failed even though
+	// it's a hard failure. Emit one failed item per per-cluster binding that
+	// shares a conflicted scanName, so counts.discovered stays reconciled
+	// with counts.created+counts.skipped+counts.failed.
+	conflictedNames := make(map[string]bool)
+	for _, p := range mergeProblems.All() {
+		if p.Category == "conflict" {
+			conflictedNames[p.ResourceRef] = true
+		}
+	}
+	for _, cs := range allClusterSSBs {
+		if cs.SSB == nil || !conflictedNames[cs.SSB.Name] {
+			continue
+		}
+		failCount++
+		seenScanNames[cs.SSB.Name] = true
+		items = append(items, report.Item{
+			Source: report.ItemSource{
+				Namespace:       cs.SSB.Namespace,
+				BindingName:     cs.SSB.Name,
+				ScanSettingName: cs.SSB.ScanSettingName,
+			},
+			Action: "fail",
+			Reason: fmt.Sprintf("cross-cluster conflict: ScanSettingBinding %q has mismatched profiles or schedule across clusters", cs.SSB.Name),
+		})
+	}
 
 	// adoptK8s/confirmer back the adopt-external workflow with real K8s
 	// operations; backupDirChecked ensures IMP-ADEXT-015's "non-empty
@@ -245,8 +286,6 @@ func (r *Runner) Run(ctx context.Context) int {
 		backupDirChecked = true
 		return adoptexternal.CheckBackupDir(r.cfg.BackupDir)
 	}
-
-	seenScanNames := make(map[string]bool)
 
 	for _, mc := range mergedConfigs {
 		seenScanNames[mc.ScanName] = true
@@ -670,9 +709,31 @@ func (r *Runner) logAndRecordResult(collector *problems.Collector, scanName stri
 			Category:    "api",
 			ResourceRef: scanName,
 			Description: result.Reason,
+			FixHint:     apiFailureFixHint(result.Error),
 			Skipped:     true,
 		})
 	}
+}
+
+// apiFailureFixHint returns a fixHint for an "api" category problem
+// (IMP-CLI-022: every problems[] entry MUST include a fixHint). It tailors
+// the hint for known *acs.HTTPError status codes and falls back to a
+// generic, still-actionable hint otherwise.
+func apiFailureFixHint(err error) string {
+	var httpErr *acs.HTTPError
+	if errors.As(err, &httpErr) {
+		switch {
+		case httpErr.StatusCode == 400:
+			return "The ACS API rejected the request; verify the referenced profiles exist on the target cluster(s) and the payload is well-formed."
+		case httpErr.StatusCode == 401 || httpErr.StatusCode == 403:
+			return "Check that ROX_API_TOKEN or ROX_ADMIN_PASSWORD is correct and has the required permissions, then re-run the importer."
+		case httpErr.StatusCode == 404:
+			return "The target ACS cluster or resource was not found; verify the cluster ID and that it is registered in ACS."
+		case httpErr.StatusCode >= 500:
+			return "The ACS API returned a server error; check Central's health and retry the importer once it recovers."
+		}
+	}
+	return "Check ACS connectivity and the scan configuration payload; see the error above, then re-run the importer."
 }
 
 // reconcileWithAdoptExternal reconciles one merged scan configuration,

@@ -132,6 +132,12 @@ Feature: Map Compliance Operator scheduled scan resources to ACS scan configurat
     And problem description MUST mention mismatch across clusters
     And the console MUST print a warning with the conflict reason
 
+  # IMP-MAP-020b: a cross-cluster conflict is a per-binding failure. It MUST be
+  # visible in the final report, not silently dropped: the full pipeline MUST
+  # record it in items[] with action "fail" and count it in counts.failed, so
+  # counts.discovered == counts.created + counts.skipped + counts.failed holds.
+  # (Tested as a run.go integration test, since it spans discovery→merge→report.)
+
   # IMP-MAP-020, IMP-MAP-020a
   @mapping @clusters @multicluster @error
   Scenario: Error when same-name SSBs have mismatched schedules
