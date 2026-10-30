@@ -1,6 +1,7 @@
 package run
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/stackrox/co-importer/internal/models"
 	"github.com/stackrox/co-importer/internal/problems"
 	"github.com/stackrox/co-importer/internal/report"
+	"github.com/stackrox/co-importer/internal/status"
 )
 
 // --- Fakes for full-pipeline (Runner.Run) integration tests. ---
@@ -123,6 +125,66 @@ func ssbRef(name string, profiles ...string) models.ScanSettingBinding {
 		Name:            name,
 		ScanSettingName: "default",
 		Profiles:        refs,
+	}
+}
+
+// TestIMP_CLI_029_ListSSBsWithoutACSDoesNotPanic reproduces the real-cluster
+// regression found validating the --list-ssbs-without-endpoint fix: ListSSBs
+// builds a Runner with a nil ACS client, and buildClusterSources then tried to
+// resolve a cluster ID via ACS.ListClusters() on that nil client, panicking.
+// IMP-CLI-029 says --list-ssbs never contacts ACS, so cluster-ID discovery must
+// be skipped. This test drives the real buildClusterSources via a temp
+// kubeconfig (clients are lazy, so no real connection happens) and asserts
+// ListSSBs returns without panicking.
+func TestIMP_CLI_029_ListSSBsWithoutACSDoesNotPanic(t *testing.T) {
+	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
+	// Minimal, structurally valid kubeconfig with one context. The server is
+	// never contacted (ListSSBs only lazily lists, failing gracefully).
+	const kc = `apiVersion: v1
+kind: Config
+clusters:
+- name: c1
+  cluster:
+    server: https://127.0.0.1:1
+contexts:
+- name: ctx-a
+  context:
+    cluster: c1
+    user: u1
+current-context: ctx-a
+users:
+- name: u1
+  user:
+    token: fake
+`
+	if err := os.WriteFile(kubeconfig, []byte(kc), 0o600); err != nil {
+		t.Fatalf("writing kubeconfig: %v", err)
+	}
+	t.Setenv("KUBECONFIG", kubeconfig)
+
+	cfg := &config.Config{ListSSBs: true, Namespace: "openshift-compliance"}
+	var out bytes.Buffer
+
+	// Before the fix this panicked; now it must return an exit code cleanly.
+	exitCode := ListSSBs(context.Background(), cfg, &out)
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected ExitSuccess from --list-ssbs, got %d", exitCode)
+	}
+
+	// The key invariant: with a nil ACS client (list mode), buildClusterSources
+	// must build the source WITHOUT attempting cluster-ID discovery (which calls
+	// ACS). It must not construct a Discoverer backed by the nil ACS client. So
+	// a source is returned with an empty clusterID, and ACS is never touched.
+	r := &Runner{cfg: cfg, acsClient: nil, printer: status.New()}
+	sources, err := r.buildClusterSources(context.Background(), problems.New())
+	if err != nil {
+		t.Fatalf("buildClusterSources returned error: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source built in list mode, got %d", len(sources))
+	}
+	if sources[0].clusterID != "" {
+		t.Errorf("expected empty clusterID in list mode (no ACS discovery), got %q", sources[0].clusterID)
 	}
 }
 

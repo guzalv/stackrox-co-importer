@@ -474,6 +474,21 @@ func (r *Runner) buildClusterSources(ctx context.Context, collector *problems.Co
 				continue
 			}
 
+			// IMP-CLI-029: --list-ssbs never contacts ACS, so there is no ACS
+			// client to resolve a cluster ID against. Skip cluster-ID discovery
+			// entirely in that mode (it only reads SSBs per context) rather than
+			// calling ACS on a nil client. clusterID stays empty, which list
+			// mode never uses.
+			if r.acsClient == nil {
+				allSources = append(allSources, clusterSource{
+					kubeconfigFile: kcFile,
+					contextName:    ctxName,
+					coClient:       coClient,
+					dynClient:      dynClient,
+				})
+				continue
+			}
+
 			kubeReader := &cofetch.KubeReaderFromDynamic{DynClient: dynClient}
 			disc := &discover.Discoverer{
 				Kube: kubeReader,
