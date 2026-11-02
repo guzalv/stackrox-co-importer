@@ -216,16 +216,19 @@ func (c *httpClient) ListClusters(ctx context.Context) ([]ACSClusterInfo, error)
 		return nil, err
 	}
 
+	// IMP-MAP-017a: providerMetadata is nested under status in the ACS
+	// /v1/clusters response, not at the top level of the cluster object.
 	var resp struct {
 		Clusters []struct {
-			ID               string `json:"id"`
-			Name             string `json:"name"`
-			Status           json.RawMessage `json:"status"`
-			ProviderMetadata struct {
-				Cluster struct {
-					ID string `json:"id"`
-				} `json:"cluster"`
-			} `json:"providerMetadata"`
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Status struct {
+				ProviderMetadata struct {
+					Cluster struct {
+						ID string `json:"id"`
+					} `json:"cluster"`
+				} `json:"providerMetadata"`
+			} `json:"status"`
 		} `json:"clusters"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -237,7 +240,7 @@ func (c *httpClient) ListClusters(ctx context.Context) ([]ACSClusterInfo, error)
 		clusters[i] = ACSClusterInfo{
 			ID:                        c.ID,
 			Name:                      c.Name,
-			ProviderMetadataClusterID: c.ProviderMetadata.Cluster.ID,
+			ProviderMetadataClusterID: c.Status.ProviderMetadata.Cluster.ID,
 		}
 	}
 	return clusters, nil
