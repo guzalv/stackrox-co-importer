@@ -188,6 +188,15 @@ Feature: Adopt externally-managed ScanSettingBindings before creating ACS scan c
     Then the importer MUST use the persisted plan instead of failing due to missing discovery
     And the importer MUST proceed to create ACS scan configuration "cis-weekly"
 
+  # IMP-ADEXT-017: the persisted plan MUST accumulate EVERY backed-up scan across
+  # a run (and across re-runs that reuse the same --backup-dir), not just the
+  # last. Each blocked scan is backed up in its own WriteBackup call, so
+  # WriteBackup MUST merge the current scan into any existing plan.json instead
+  # of overwriting it. Otherwise the re-run-after-manual-deletion flow
+  # (IMP-ADEXT-011) recreates only the last scan, silently dropping the rest. The
+  # per-SSB YAML backups already accumulate; the plan MUST match.
+  # (Tested as a Go unit test in internal/adoptexternal.)
+
   # IMP-ADEXT-012
   @adopt-external @resume
   Scenario: Resume refuses a plan from a different environment
