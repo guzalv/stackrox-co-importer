@@ -101,16 +101,26 @@ docker pull ghcr.io/guzalv/stackrox-co-importer:latest
 ```
 
 Run the image, passing credentials as env vars and mounting your kubeconfig so
-the tool can read Compliance Operator resources:
+the tool can read Compliance Operator resources. Also mount a writable volume at
+`/backups`: on an apply run the importer backs up any blocking Compliance
+Operator ScanSettingBindings there before touching them, and that backup must
+survive the container (`--rm`) so you can resume after removing them. The
+container defaults `--backup-dir` to `/backups`, so you only need the mount:
 
 ```bash
 docker run --rm \
   -e ROX_ENDPOINT="https://central.example.com:443" \
   -e ROX_API_TOKEN="your-token-here" \
   -v "$HOME/.kube/config:/kubeconfig:ro" \
+  -v "$PWD/co-backups:/backups" \
   -e KUBECONFIG=/kubeconfig \
   ghcr.io/guzalv/stackrox-co-importer:latest --dry-run
 ```
+
+The `/backups` volume must be writable by the container's non-root user
+(UID 65534). With podman, append `:U` to the mount (`-v "$PWD/co-backups:/backups:U"`)
+to chown it automatically. With Docker, make the host directory writable by
+UID 65534 first (e.g. `mkdir -p co-backups && chmod 777 co-backups`).
 
 To trust a self-signed Central CA, mount the CA file too and add
 `--ca-cert-file /ca.pem` (or pass `--insecure-skip-verify` for dev/test).
