@@ -188,13 +188,13 @@ Feature: Adopt externally-managed ScanSettingBindings before creating ACS scan c
 
   # IMP-ADEXT-010
   @adopt-external @orphan
-  Scenario: Leftover ScanSetting is left in place with a warning
+  Scenario: Leftover ScanSetting is left in place as an informational note
     Given ScanSettingBinding "cis-weekly" referenced ScanSetting "gitops-weekly" before deletion
     And "cis-weekly" was successfully created in ACS after removing the blocking ScanSettingBinding
     When the importer processes the adoption workflow
     Then ScanSetting "gitops-weekly" MUST NOT be deleted
     And problems list MUST include category "orphan" for "gitops-weekly"
-    And the problem severity MUST be "warning"
+    And the problem severity MUST be "info"
 
   # ─── Resume after interruption or manual deletion ─────────────────────────────
 

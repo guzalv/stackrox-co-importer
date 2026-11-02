@@ -444,7 +444,7 @@ func (r *Runner) Run(ctx context.Context) int {
 			// ScanSetting a resumed scan's (now-deleted) source SSB(s)
 			// referenced as possibly orphaned.
 			for _, src := range ps.Sources {
-				collector.Add(adoptexternal.OrphanWarning(src.ScanSettingName, src.Context, src.Namespace))
+				collector.Add(adoptexternal.OrphanNote(src.ScanSettingName, src.Context, src.Namespace))
 			}
 		}
 		switch item.Action {
@@ -1073,7 +1073,7 @@ func (r *Runner) executeAdoptions(
 			// referenced are intentionally left in place; flag them as
 			// possibly orphaned rather than deleting them ourselves.
 			for _, ss := range p.scanSettings {
-				collector.Add(adoptexternal.OrphanWarning(ss.ScanSetting.Name, ss.Context, ss.ScanSetting.Namespace))
+				collector.Add(adoptexternal.OrphanNote(ss.ScanSetting.Name, ss.Context, ss.ScanSetting.Namespace))
 			}
 		}
 		items = append(items, item)

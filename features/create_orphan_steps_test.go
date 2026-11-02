@@ -69,7 +69,7 @@ func acsAlreadyHasScanConfigurationNamed(scanName string) error {
 // here, only a call into Reconcile. IMP-ADEXT-009
 //
 // When the create succeeds and a ScanSetting referenced by a deleted blocker
-// was recorded (IMP-ADEXT-010), an "orphan" warning is added since the
+// was recorded (IMP-ADEXT-010), an "orphan" info note is added since the
 // importer never deletes that ScanSetting itself.
 func processCreateAfterClearWorkflow() error {
 	ensureAdextACSClient()
@@ -85,7 +85,7 @@ func processCreateAfterClearWorkflow() error {
 		mtc.skipped[mtc.adextTargetScanName] = true
 	case "create":
 		if mtc.adextOrphanScanSetting != "" {
-			mtc.problems.Add(adoptexternal.OrphanWarning(mtc.adextOrphanScanSetting, mtc.adextOrphanContext, mtc.adextOrphanNamespace))
+			mtc.problems.Add(adoptexternal.OrphanNote(mtc.adextOrphanScanSetting, mtc.adextOrphanContext, mtc.adextOrphanNamespace))
 		}
 	}
 	return nil
@@ -108,7 +108,7 @@ func scanNameMustBeSkippedWithReasonMentioning(scanName, substr string) error {
 	return nil
 }
 
-// --- IMP-ADEXT-010: Leftover ScanSetting is left in place with a warning ---
+// --- IMP-ADEXT-010: Leftover ScanSetting is left in place as an informational note ---
 
 func ssbReferencedScanSettingBeforeDeletion(_, scanSettingName string) error {
 	mtc.adextOrphanScanSetting = scanSettingName
@@ -130,7 +130,7 @@ func scanNameWasSuccessfullyCreatedAfterRemovingBlocker(scanName string) error {
 
 func scanSettingMustNotBeDeleted(name string) error {
 	// IMP-ADEXT-010: the importer never deletes a ScanSetting itself, only
-	// warns that it may be orphaned. There is no ScanSetting-deleting code
+	// notes that it may be orphaned. There is no ScanSetting-deleting code
 	// path anywhere in this package for a scenario to have triggered, so
 	// this documents that guarantee; nothing in processCreateAfterClearWorkflow
 	// (or any other adoptexternal entry point) ever calls a deleter for a

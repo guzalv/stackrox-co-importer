@@ -3,7 +3,7 @@ package problems
 
 // Problem is a structured issue entry recorded during an importer run.
 type Problem struct {
-	Severity    string `json:"severity"`    // "error" or "warning"
+	Severity    string `json:"severity"`    // "error", "warning", or "info"
 	Category    string `json:"category"`    // "mapping", "conflict", "input", etc.
 	ResourceRef string `json:"resourceRef"` // "namespace/name" or synthetic
 	Description string `json:"description"`
