@@ -5,8 +5,12 @@ multi-architecture container image.
 
 ## Design decisions
 
-- Single-stage build using `ubi9-micro` as base (includes CA certificates),
+- Final runtime stage uses `ubi9-micro` as base (includes CA certificates),
   pinned by sha256 digest for reproducible builds (no silent base-image drift).
+  A minimal prep stage (also pinned by digest) MAY be used to create fixtures the
+  shell-less `ubi9-micro` cannot, such as the writable `/backups` directory. The
+  shipped image still contains only the `ubi9-micro` layer plus the binary and
+  the empty `/backups` directory.
 - Multi-arch: `linux/amd64` and `linux/arm64`.
 - Static binary: `CGO_ENABLED=0`, pure Go.
 - Non-root: runs as UID `65534` (nobody).
@@ -16,13 +20,19 @@ multi-architecture container image.
 ### IMP-IMG-001: Dockerfile
 
 The Dockerfile MUST:
-- Use `registry.access.redhat.com/ubi9-micro` as base, pinned by sha256 digest
-  (not a floating `:latest` tag), so builds are reproducible and the shipped
-  image never goes silently stale. A comment MUST record the human-readable
-  version/tag the digest corresponds to. The digest MUST be refreshed
-  periodically (manually, or via a bot such as Renovate/Dependabot) to pick up
-  base-image security updates.
+- Use `registry.access.redhat.com/ubi9-micro` as the final runtime base, pinned
+  by sha256 digest (not a floating `:latest` tag), so builds are reproducible and
+  the shipped image never goes silently stale. A comment MUST record the
+  human-readable version/tag the digest corresponds to. The digest MUST be
+  refreshed periodically (manually, or via a bot such as Renovate/Dependabot) to
+  pick up base-image security updates.
 - COPY the pre-compiled binary as `/compliance-operator-importer`.
+- Provide a writable `/backups` directory owned by `65534:65534` (the default
+  `--backup-dir` for the container, see IMP-CLI-032). Because `ubi9-micro` has no
+  shell, this directory is created in a minimal prep stage (also pinned by sha256
+  digest) and copied in with `COPY --chown=65534:65534`.
+- Set `ENV CO_IMPORTER_BACKUP_DIR=/backups` so the container defaults
+  `--backup-dir` to the writable volume mount point (IMP-CLI-032).
 - Set `USER 65534:65534`.
 - Set `ENTRYPOINT ["/compliance-operator-importer"]`.
 

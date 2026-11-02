@@ -449,6 +449,24 @@ Feature: CLI and configuration contract
     Then config parsing succeeds
     And the backup dir is "/tmp/my-backups"
 
+  # IMP-CLI-032
+  Scenario: Backup dir from CO_IMPORTER_BACKUP_DIR env when no flag
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    And env var "CO_IMPORTER_BACKUP_DIR" is "/backups"
+    When I parse config with no flags
+    Then config parsing succeeds
+    And the backup dir is "/backups"
+
+  # IMP-CLI-032
+  Scenario: --backup-dir flag overrides CO_IMPORTER_BACKUP_DIR env
+    Given env var "ROX_API_TOKEN" is "tok"
+    And env var "ROX_ENDPOINT" is "central.example.com"
+    And env var "CO_IMPORTER_BACKUP_DIR" is "/backups"
+    When I parse config with flags "--backup-dir /tmp/my-backups"
+    Then config parsing succeeds
+    And the backup dir is "/tmp/my-backups"
+
   # ─── IMP-CLI-033: --settle-timeout ───────────────────────────────────────────
 
   # IMP-CLI-033

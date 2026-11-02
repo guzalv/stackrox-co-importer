@@ -13,3 +13,5 @@ hack/.demo-seed-id
 # created next to wherever the binary is run from, unless --backup-dir is
 # passed explicitly.
 /co-importer-backup-*/
+# Conventional host mount for the container's /backups volume (see README).
+/co-backups/

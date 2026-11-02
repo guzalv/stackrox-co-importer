@@ -204,7 +204,12 @@ func Parse(args []string, getenv envFunc, stdinIsTTY ttyFunc) (*Config, error) {
 		SettleTimeout:      *settleTimeout,
 	}
 
-	// IMP-CLI-032: default to a timestamped directory when --backup-dir is not given.
+	// IMP-CLI-032: resolve backup dir: flag > CO_IMPORTER_BACKUP_DIR env > default.
+	// The env var lets the container image set a writable default (/backups)
+	// without changing the bare binary's relative default.
+	if cfg.BackupDir == "" {
+		cfg.BackupDir = getenv("CO_IMPORTER_BACKUP_DIR")
+	}
 	if cfg.BackupDir == "" {
 		cfg.BackupDir = defaultBackupDir()
 	}

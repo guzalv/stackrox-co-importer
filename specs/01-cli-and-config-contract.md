@@ -96,11 +96,14 @@ external SSB, rather than surfacing ACS's raw error. Full runtime behavior is sp
 - **IMP-CLI-031**: `--yes` / `-y` (boolean, default `false`): skips the interactive
   confirmation prompt that `--delete-existing` would otherwise show. Has no effect when
   `--delete-existing` is not set.
-- **IMP-CLI-032**: `--backup-dir <path>` (default: `./co-importer-backup-<RFC3339 timestamp>`):
-  directory where backups of resources the importer deletes, and a resumable plan
-  (`plan.json`), are written. Before writing, the importer MUST verify the directory is
-  either new/empty or contains a `plan.json` from a prior run (see IMP-ADEXT-011/012/015);
-  otherwise it MUST fail rather than write into an unrelated directory.
+- **IMP-CLI-032**: `--backup-dir <path>`: directory where backups of resources the importer
+  deletes, and a resumable plan (`plan.json`), are written. The value is resolved in order:
+  the `--backup-dir` flag, then the `CO_IMPORTER_BACKUP_DIR` environment variable, then the
+  default `./co-importer-backup-<RFC3339 timestamp>`. The environment variable lets the
+  container image set a writable default (`/backups`) without changing the bare binary's
+  relative default. Before writing, the importer MUST verify the directory is either
+  new/empty or contains a `plan.json` from a prior run (see IMP-ADEXT-011/012/015); otherwise
+  it MUST fail rather than write into an unrelated directory.
 - **IMP-CLI-033**: `--settle-timeout <duration>` (default `5s`): after a blocking external SSB
   is observed gone, the importer re-polls for this duration to detect GitOps self-healing
   before proceeding to create the scan configuration.
