@@ -436,10 +436,14 @@ func (r *Runner) Run(ctx context.Context) int {
 	reportCreateCount := createCount + updateCount
 	r.writeReportFull(collector, items, totalDiscovered, reportCreateCount, skipCount, failCount)
 
-	// Step 8: Print console summary (IMP-CLI-020)
+	// Step 8: Print collected problems with remediation (IMP-CLI-020a), so the
+	// "see problems for remediation" messages are actionable without --report-json.
+	r.printProblems(collector.All())
+
+	// Step 9: Print console summary (IMP-CLI-020)
 	r.printSummary(totalDiscovered, createCount+updateCount, skipCount, failCount)
 
-	// Step 9: Return exit code
+	// Step 10: Return exit code
 	return exitCodeForRun(failCount, collector.All())
 }
 
@@ -619,10 +623,37 @@ func (r *Runner) printSummary(discovered, creates, skips, failures int) {
 	if r.cfg.DryRun {
 		dryRunTag = " (dry-run)"
 	}
-	fmt.Fprintf(os.Stderr,
+	fmt.Fprintf(r.printer.Writer(),
 		"  Discovered: %d | Created: %d | Skipped: %d | Failed: %d%s\n",
 		discovered, creates, skips, failures, dryRunTag,
 	)
+}
+
+// printProblems prints a human-readable Problems section so remediation hints
+// are visible on the console without requiring --report-json. IMP-CLI-020a.
+// Each entry shows severity, resourceRef, category, description, and (when set)
+// an indented fix hint. The run-time "see problems for remediation" messages
+// point here.
+func (r *Runner) printProblems(probs []problems.Problem) {
+	if len(probs) == 0 {
+		return
+	}
+	w := r.printer.Writer()
+	r.printer.Stage("Problems", "")
+	for _, p := range probs {
+		severity := p.Severity
+		if severity == "" {
+			severity = "warning"
+		}
+		ref := p.ResourceRef
+		if ref == "" {
+			ref = "-"
+		}
+		fmt.Fprintf(w, "  [%s] %s (%s): %s\n", severity, ref, p.Category, p.Description)
+		if p.FixHint != "" {
+			fmt.Fprintf(w, "      fix: %s\n", p.FixHint)
+		}
+	}
 }
 
 // adoptExternalSSBGVR is the ScanSettingBinding GroupVersionResource used by

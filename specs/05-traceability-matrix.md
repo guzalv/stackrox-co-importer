@@ -13,6 +13,7 @@ Use this matrix to ensure complete implementation coverage.
 |IMP-ACC-001..027|`04-validation-and-acceptance.md`|e2e tests in `e2e/`|Real cluster, ACS verification, multi-cluster merge, auto-discovery, --exclude, --list-ssbs|
 |IMP-IMG-001..006|`07-container-image.md`|Build + smoke|Dockerfile, static binary, multi-arch manifest, image size|
 |IMP-CLI-028..029 (runtime)|`06-exclude-and-list-ssbs.feature`|Godog scenarios in `features/`|--exclude filtering, --list-ssbs output|
+|IMP-CLI-020a|`01-cli-and-config-contract.md`|Go integration test in `internal/run/`|Collected problems + fix hints printed to the console, independent of --report-json|
 |IMP-ADEXT-001..015|`08-adopt-external-ssb.feature`|Godog scenarios in `features/`|Detect/back up/remove externally-managed SSBs blocking ACS scan config create or update, settle-timeout self-heal guard, multi-cluster all-clear gate, resume, orphaned ScanSetting warning. Replaces the retired IMP-ADOPT-001..008 (patch-after-create, invalidated by the always-on external-SSB conflict check)|
 |IMP-ADEXT-016|`08-adopt-external-ssb.feature`|Go integration test in `internal/run/`|Backup write failure (unwritable --backup-dir) fails the scan with a remediation hint, not a raw OS error|
 |IMP-ADEXT-017|`08-adopt-external-ssb.feature`|Go unit test in `internal/adoptexternal/`|plan.json accumulates every backed-up scan (WriteBackup merges, does not overwrite), so re-run after manual deletion recreates all scans|
