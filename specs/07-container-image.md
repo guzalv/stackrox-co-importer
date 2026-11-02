@@ -68,8 +68,40 @@ The image MUST include OCI labels:
 - `org.opencontainers.image.description=Compliance Operator to ACS scan configuration importer`
 - `org.opencontainers.image.source=https://github.com/guzalv/stackrox-co-importer`
 
+### IMP-IMG-007: Install script
+
+The repository MUST provide an `install.sh` at its root that downloads the
+prebuilt binary for the host and drops it locally, so a user needs neither a Go
+toolchain nor a container runtime. It is run as
+`curl -fsSL https://raw.githubusercontent.com/guzalv/stackrox-co-importer/main/install.sh | bash`.
+
+The script MUST:
+- Detect the OS from `uname -s` (`Linux`->`linux`, `Darwin`->`darwin`) and the
+  architecture from `uname -m` (`x86_64`/`amd64`->`amd64`, `aarch64`/`arm64`->`arm64`).
+  Any other OS or architecture MUST fail with a clear message pointing to the
+  releases page for a manual download.
+- Resolve the latest release tag by following the `/releases/latest` HTTP
+  redirect to `/releases/tag/<tag>` (no GitHub API call, so no token and no rate
+  limit). A `VERSION` env var (with or without a leading `v`) MUST override this
+  and skip the lookup.
+- Download the matching release archive
+  (`stackrox-co-importer_<version>_<os>_<arch>.tar.gz`) and `checksums.txt`, then
+  verify the archive's SHA-256 against the recorded checksum. A mismatch or a
+  missing checksum entry MUST abort before any binary is written.
+- Extract only the `compliance-operator-importer` binary into `INSTALL_DIR`
+  (default: the current directory), mark it executable, and print the resolved
+  version and a run hint.
+- Preflight for `curl`, `tar`, and a SHA-256 tool (`sha256sum` or `shasum`), and
+  clean up its temporary download directory on exit.
+- Support an `INSTALL_DIR` override and a `BASE_URL` override (default
+  `https://github.com`, used for both the redirect and the asset download) so
+  the script is testable against a stub server.
+
+Note: a binary fetched with `curl` carries no `com.apple.quarantine` attribute,
+so macOS Gatekeeper does not block it (unlike a browser download).
+
 ## Non-goals
 
-- CI/CD pipeline integration (future work).
 - Helm chart or operator packaging.
 - Signing or SBOM generation (deferred).
+- Package-manager distribution (Homebrew, apt, etc.).
