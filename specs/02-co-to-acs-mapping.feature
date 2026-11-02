@@ -105,6 +105,17 @@ Feature: Map Compliance Operator scheduled scan resources to ACS scan configurat
     When the importer resolves the ACS cluster ID for "ctx-c"
     Then the resolved ACS cluster ID MUST be "acs-uuid-c"
 
+  # IMP-MAP-018a: wire format of the helm-effective-cluster-name Secret as read
+  # through the Kubernetes dynamic (unstructured) client. Secret ".data" values
+  # are base64-encoded by the API server and the dynamic client does NOT decode
+  # them (unlike the typed client). The reader MUST base64-decode the value and
+  # trim surrounding whitespace (the stored value commonly has a trailing
+  # newline), otherwise helm-name matching (IMP-MAP-018) compares a base64 blob
+  # against the plain ACS cluster name and never matches. ConfigMap ".data"
+  # values are plain text and MUST NOT be decoded.
+  # (Tested at the Go unit level in internal/cofetch/kubereader_test.go, since
+  # the Godog KubeReader is a fake that returns already-decoded plain strings.)
+
   # IMP-MAP-016a
   @mapping @clusters
   Scenario: All discovery methods fail with detailed per-method errors
