@@ -18,6 +18,7 @@ Use this matrix to ensure complete implementation coverage.
 |IMP-ADEXT-016|`08-adopt-external-ssb.feature`|Go integration test in `internal/run/`|Backup write failure (unwritable --backup-dir) fails the scan with a remediation hint, not a raw OS error|
 |IMP-ADEXT-017|`08-adopt-external-ssb.feature`|Go unit test in `internal/adoptexternal/`|plan.json accumulates every backed-up scan (WriteBackup merges, does not overwrite), so re-run after manual deletion recreates all scans|
 |IMP-ADEXT-018|`08-adopt-external-ssb.feature`|Go integration test in `internal/run/`|Confirmation is batched: multiple blocked scans produce a single delete-confirmation prompt, not one per scan|
+|IMP-ADEXT-019|`08-adopt-external-ssb.feature`|Go integration test in `internal/run/`|Adopt-external delete/exists routed by unique ACS cluster ID, not kubecontext name, so colliding context names (e.g. both "admin") delete against the correct cluster|
 
 ## Coverage rule
 

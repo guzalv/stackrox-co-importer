@@ -11,21 +11,20 @@ import (
 )
 
 // Deleter abstracts the K8s delete operation needed to remove a blocking
-// ScanSettingBinding. A real dynamic-client-backed implementation is wired
-// into internal/run.go by a later task; ResolveBlocker only needs the
-// interface so tests can supply a fake.
+// ScanSettingBinding. clusterID is the UNIQUE cluster identity (the resolved
+// ACS cluster ID) used to route the delete to the right cluster — NOT the
+// kubecontext name, which can collide across clusters (IMP-ADEXT-019).
 type Deleter interface {
-	DeleteScanSettingBinding(ctxName, namespace, name string) error
+	DeleteScanSettingBinding(clusterID, namespace, name string) error
 }
 
 // Exister abstracts checking whether a ScanSettingBinding currently exists.
 // SettleGuard uses it after a blocking ScanSettingBinding has been deleted,
 // to detect a GitOps tool recreating it (self-heal) before the settle
-// timeout elapses. A real dynamic-client-backed implementation is wired into
-// internal/run.go by a later task; ResolveBlocker and SettleGuard only need
-// the interface so tests can supply a fake.
+// timeout elapses. clusterID is the UNIQUE cluster identity used to route the
+// check to the right cluster, NOT the kubecontext name (IMP-ADEXT-019).
 type Exister interface {
-	ScanSettingBindingExists(ctxName, namespace, name string) (bool, error)
+	ScanSettingBindingExists(clusterID, namespace, name string) (bool, error)
 }
 
 // Confirmer prompts the operator with prompt and reports whether they
@@ -95,7 +94,7 @@ func ResolveBlocker(collector *problems.Collector, blockers []merge.ClusterSSB, 
 			if b.SSB == nil {
 				continue
 			}
-			reappeared, err := SettleGuard(exister, b.Context, b.SSB.Namespace, b.SSB.Name, settleTimeout, poll)
+			reappeared, err := SettleGuard(exister, b.ClusterID, b.SSB.Namespace, b.SSB.Name, settleTimeout, poll)
 			if err != nil {
 				return false, fmt.Errorf("checking whether ScanSettingBinding %s/%s on %s reappeared: %w", b.SSB.Namespace, b.SSB.Name, b.Context, err)
 			}
@@ -131,15 +130,17 @@ func ResolveBlocker(collector *problems.Collector, blockers []merge.ClusterSSB, 
 // gone, i.e. whether the caller may proceed with the merged create.
 // IMP-ADEXT-008
 func ResolveMergedBlockers(collector *problems.Collector, scanName string, perClusterBlockers map[string][]merge.ClusterSSB, deleteExisting, yes bool, deleter Deleter, confirmer Confirmer, exister Exister, settleTimeout time.Duration, poll func(time.Duration)) (bool, error) {
-	contexts := make([]string, 0, len(perClusterBlockers))
-	for ctxName := range perClusterBlockers {
-		contexts = append(contexts, ctxName)
+	// IMP-ADEXT-019: perClusterBlockers is keyed by the unique cluster ID, not
+	// the kubecontext name (which can collide across clusters).
+	clusterIDs := make([]string, 0, len(perClusterBlockers))
+	for clusterID := range perClusterBlockers {
+		clusterIDs = append(clusterIDs, clusterID)
 	}
-	sort.Strings(contexts)
+	sort.Strings(clusterIDs)
 
 	var allBlockers []merge.ClusterSSB
-	for _, ctxName := range contexts {
-		allBlockers = append(allBlockers, perClusterBlockers[ctxName]...)
+	for _, clusterID := range clusterIDs {
+		allBlockers = append(allBlockers, perClusterBlockers[clusterID]...)
 	}
 
 	if !deleteExisting {
@@ -167,17 +168,18 @@ func ResolveMergedBlockers(collector *problems.Collector, scanName string, perCl
 	// IMP-ADEXT-008: check every cluster independently; the merged create
 	// may only proceed if none of them reappeared.
 	var reappearedOn []string
-	for _, ctxName := range contexts {
-		for _, b := range perClusterBlockers[ctxName] {
+	for _, clusterID := range clusterIDs {
+		for _, b := range perClusterBlockers[clusterID] {
 			if b.SSB == nil {
 				continue
 			}
-			reappeared, err := SettleGuard(exister, b.Context, b.SSB.Namespace, b.SSB.Name, settleTimeout, poll)
+			reappeared, err := SettleGuard(exister, b.ClusterID, b.SSB.Namespace, b.SSB.Name, settleTimeout, poll)
 			if err != nil {
 				return false, fmt.Errorf("checking whether ScanSettingBinding %s/%s on %s reappeared: %w", b.SSB.Namespace, b.SSB.Name, b.Context, err)
 			}
 			if reappeared {
-				reappearedOn = append(reappearedOn, ctxName)
+				// Display the human-readable context, not the cluster ID.
+				reappearedOn = append(reappearedOn, b.Context)
 				break
 			}
 		}
@@ -252,7 +254,8 @@ func deleteBlockers(blockers []merge.ClusterSSB, deleter Deleter) error {
 		if b.SSB == nil {
 			continue
 		}
-		if err := deleter.DeleteScanSettingBinding(b.Context, b.SSB.Namespace, b.SSB.Name); err != nil {
+		// IMP-ADEXT-019: route by the unique cluster ID, display by context.
+		if err := deleter.DeleteScanSettingBinding(b.ClusterID, b.SSB.Namespace, b.SSB.Name); err != nil {
 			return fmt.Errorf("deleting blocking ScanSettingBinding %s/%s on %s: %w", b.SSB.Namespace, b.SSB.Name, b.Context, err)
 		}
 	}
@@ -260,17 +263,18 @@ func deleteBlockers(blockers []merge.ClusterSSB, deleter Deleter) error {
 }
 
 // SettleGuard polls exister for up to settleTimeout to detect whether the
-// ScanSettingBinding named name (namespace/name on ctxName) reappears after
-// being deleted, i.e. a GitOps tool self-healing by recreating it. It
-// returns true as soon as the ScanSettingBinding is observed to exist, or
-// false once settleTimeout elapses without it reappearing.
+// ScanSettingBinding namespace/name on cluster clusterID reappears after being
+// deleted, i.e. a GitOps tool self-healing by recreating it. It returns true
+// as soon as the ScanSettingBinding is observed to exist, or false once
+// settleTimeout elapses without it reappearing. clusterID is the unique cluster
+// identity (IMP-ADEXT-019), not the kubecontext name.
 //
 // poll is called between checks and should block for approximately the
 // given duration; pass nil to use time.Sleep. Tests inject a fast or
 // instant-returning poll function so the guard can be exercised
 // deterministically without waiting out settleTimeout for real.
 // IMP-ADEXT-006, IMP-ADEXT-007
-func SettleGuard(exister Exister, ctxName, namespace, name string, settleTimeout time.Duration, poll func(time.Duration)) (bool, error) {
+func SettleGuard(exister Exister, clusterID, namespace, name string, settleTimeout time.Duration, poll func(time.Duration)) (bool, error) {
 	if poll == nil {
 		poll = time.Sleep
 	}
@@ -282,7 +286,7 @@ func SettleGuard(exister Exister, ctxName, namespace, name string, settleTimeout
 	}
 
 	for elapsed := time.Duration(0); ; {
-		exists, err := exister.ScanSettingBindingExists(ctxName, namespace, name)
+		exists, err := exister.ScanSettingBindingExists(clusterID, namespace, name)
 		if err != nil {
 			return false, err
 		}

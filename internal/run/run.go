@@ -240,7 +240,7 @@ func (r *Runner) Run(ctx context.Context) int {
 				bindingName:     ssb.Name,
 				scanSettingName: ssb.ScanSettingName,
 			}
-			scanSettingsByBinding[src.contextName+"/"+ssb.Name] = ss
+			scanSettingsByBinding[src.clusterID+"/"+ssb.Name] = ss
 
 			allClusterSSBs = append(allClusterSSBs, merge.ClusterSSB{
 				Context:        src.contextName,
@@ -703,18 +703,21 @@ func newAdoptK8sAdapter(sources []clusterSource) *adoptK8sAdapter {
 	return &adoptK8sAdapter{sources: sources}
 }
 
-func (a *adoptK8sAdapter) dynClientFor(ctxName string) (dynamic.Interface, error) {
+// dynClientFor resolves the dynamic client for a cluster by its unique ACS
+// cluster ID. IMP-ADEXT-019: routing by context name is unsafe because two
+// sources can share a context name (e.g. both "admin").
+func (a *adoptK8sAdapter) dynClientFor(clusterID string) (dynamic.Interface, error) {
 	for _, s := range a.sources {
-		if s.contextName == ctxName {
+		if s.clusterID == clusterID {
 			return s.dynClient, nil
 		}
 	}
-	return nil, fmt.Errorf("context %q not found in cluster sources", ctxName)
+	return nil, fmt.Errorf("cluster %q not found in cluster sources", clusterID)
 }
 
 // DeleteScanSettingBinding implements adoptexternal.Deleter. IMP-ADEXT-004
-func (a *adoptK8sAdapter) DeleteScanSettingBinding(ctxName, namespace, name string) error {
-	dyn, err := a.dynClientFor(ctxName)
+func (a *adoptK8sAdapter) DeleteScanSettingBinding(clusterID, namespace, name string) error {
+	dyn, err := a.dynClientFor(clusterID)
 	if err != nil {
 		return err
 	}
@@ -722,8 +725,8 @@ func (a *adoptK8sAdapter) DeleteScanSettingBinding(ctxName, namespace, name stri
 }
 
 // ScanSettingBindingExists implements adoptexternal.Exister. IMP-ADEXT-006, IMP-ADEXT-007
-func (a *adoptK8sAdapter) ScanSettingBindingExists(ctxName, namespace, name string) (bool, error) {
-	dyn, err := a.dynClientFor(ctxName)
+func (a *adoptK8sAdapter) ScanSettingBindingExists(clusterID, namespace, name string) (bool, error) {
+	dyn, err := a.dynClientFor(clusterID)
 	if err != nil {
 		return false, err
 	}
@@ -925,9 +928,10 @@ func (r *Runner) prepareAdoption(
 		return item, nil
 	}
 
+	// IMP-ADEXT-019: group by the unique cluster ID, not the context name.
 	perCluster := make(map[string][]merge.ClusterSSB)
 	for _, b := range blockers {
-		perCluster[b.Context] = append(perCluster[b.Context], b)
+		perCluster[b.ClusterID] = append(perCluster[b.ClusterID], b)
 	}
 
 	if err := ensureBackupDir(); err != nil {
@@ -953,7 +957,7 @@ func (r *Runner) prepareAdoption(
 		if b.SSB == nil {
 			continue
 		}
-		if ss, ok := scanSettingsByBinding[b.Context+"/"+b.SSB.Name]; ok && ss != nil {
+		if ss, ok := scanSettingsByBinding[b.ClusterID+"/"+b.SSB.Name]; ok && ss != nil {
 			scanSettings = append(scanSettings, adoptexternal.ScanSettingSource{Context: b.Context, ScanSetting: *ss})
 		}
 	}

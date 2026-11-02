@@ -163,6 +163,16 @@ Feature: Adopt externally-managed ScanSettingBindings before creating ACS scan c
     And problems list MUST include category "gitops" for "cis-weekly"
     And the problem description MUST mention cluster "ctx-b"
 
+  # IMP-ADEXT-019: the adopt-external workflow MUST route each blocking
+  # ScanSettingBinding's delete/exists check to the correct cluster by a UNIQUE
+  # cluster identity (the resolved ACS cluster ID), NOT by kubecontext name.
+  # Kubeconfig context names routinely collide across clusters (e.g. both named
+  # "admin"); keying deletes by context name sends the delete for one cluster's
+  # SSB to another cluster, so a merged scan spanning those clusters leaves
+  # SSBs undeleted and partially fails. Context names remain for human-readable
+  # display only. (Tested as a run.go integration test in internal/run with two
+  # sources that share a context name but have distinct cluster IDs.)
+
   # ─── Create (idempotent) ───────────────────────────────────────────────────────
 
   # IMP-ADEXT-009
