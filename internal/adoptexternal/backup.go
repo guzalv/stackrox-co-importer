@@ -108,6 +108,26 @@ func WriteBackup(dir string, plan Plan, ssbs []merge.ClusterSSB, scanSettings []
 		}
 	}
 
+	// IMP-ADEXT-017: each blocked scan is backed up in its own WriteBackup call,
+	// so accumulate into any existing plan.json instead of overwriting it.
+	// Otherwise the plan ends up holding only the last scan, and a re-run after
+	// manual SSB deletion (IMP-ADEXT-011) recreates only that one.
+	existing, err := LoadPlan(dir)
+	if err != nil {
+		return fmt.Errorf("reading existing plan.json for merge: %w", err)
+	}
+	if existing != nil {
+		if existing.Scans == nil {
+			existing.Scans = map[string]PlannedScan{}
+		}
+		for name, ps := range plan.Scans {
+			existing.Scans[name] = ps
+		}
+		// Keep the existing env: it was validated against this run at startup
+		// (IMP-ADEXT-012) and must stay stable across the backup dir's lifetime.
+		plan = *existing
+	}
+
 	planData, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling plan.json: %w", err)
