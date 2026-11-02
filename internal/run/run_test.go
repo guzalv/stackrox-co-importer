@@ -577,3 +577,51 @@ func TestIMP_ADEXT_018_BatchedDeleteConfirmation(t *testing.T) {
 		t.Errorf("expected both blocking SSBs deleted, got %d: %v", len(fakeK8s.deleted), fakeK8s.deleted)
 	}
 }
+
+// TestIMP_ADEXT_019_DeleteRoutedByClusterIDNotContext verifies that when two
+// clusters share the same kubecontext name ("admin" — common in practice) but
+// have distinct ACS cluster IDs, a merged scan blocked on both clusters routes
+// each delete to the CORRECT cluster. Routing by context name would send both
+// deletes to the same (first) cluster. The fake records the routing key passed
+// to the Deleter; we assert both distinct cluster IDs appear. IMP-ADEXT-019.
+func TestIMP_ADEXT_019_DeleteRoutedByClusterIDNotContext(t *testing.T) {
+	// Same SSB name + profile on two clusters => one merged scan spanning both.
+	// Both sources share the context name "admin" but have distinct cluster IDs.
+	srcA := testSource("admin", "cluster-a", []models.ScanSettingBinding{ssbRef("shared", "ocp4-cis")})
+	srcB := testSource("admin", "cluster-b", []models.ScanSettingBinding{ssbRef("shared", "ocp4-cis")})
+
+	cfg := &config.Config{
+		DeleteExisting: true,
+		ConfirmYes:     true,
+		Namespace:      "openshift-compliance",
+		BackupDir:      filepath.Join(t.TempDir(), "backups"),
+		ReportJSON:     filepath.Join(t.TempDir(), "report.json"),
+		SettleTimeout:  0,
+	}
+
+	runner := newTestRunner(cfg, newFakeACSClient(), []clusterSource{srcA, srcB})
+	fakeK8s := &fakeAdoptK8s{}
+	runner.newAdoptK8s = func(_ []clusterSource) adoptK8sClient { return fakeK8s }
+
+	runner.Run(context.Background())
+
+	// Each cluster's "shared" SSB must be deleted against its OWN cluster: the
+	// routing keys recorded must be the distinct cluster IDs, not "admin" twice.
+	routed := map[string]bool{}
+	for _, d := range fakeK8s.deleted {
+		routed[strings.SplitN(d, "/", 2)[0]] = true
+	}
+	for _, want := range []string{"cluster-a", "cluster-b"} {
+		if !routed[want] {
+			t.Errorf("expected a delete routed to cluster %q; routing keys recorded: %v", want, fakeK8s.deleted)
+		}
+	}
+	if routed["admin"] {
+		t.Errorf("delete was routed by context name %q instead of cluster ID: %v", "admin", fakeK8s.deleted)
+	}
+
+	rep := readReport(t, cfg.ReportJSON)
+	if rep.Counts.Create != 1 {
+		t.Errorf("expected the merged scan created once, got create=%d", rep.Counts.Create)
+	}
+}

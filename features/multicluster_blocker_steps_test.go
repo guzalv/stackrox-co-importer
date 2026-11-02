@@ -57,9 +57,12 @@ func kubecontextHasABlockingSSB(ctxName, ssbName string) error {
 	mtc.adextMode = true
 	mtc.adextTargetScanName = ssbName
 	mtc.adextBlocked = true
+	// IMP-ADEXT-019: routing is by unique cluster ID. In these scenarios the
+	// context name is distinct per cluster, so it doubles as the cluster ID.
 	mtc.adextClusterBlockers = append(mtc.adextClusterBlockers, merge.ClusterSSB{
-		Context: ctxName,
-		SSB:     &models.ScanSettingBinding{Name: ssbName, Namespace: "openshift-compliance"},
+		Context:   ctxName,
+		ClusterID: ctxName,
+		SSB:       &models.ScanSettingBinding{Name: ssbName, Namespace: "openshift-compliance"},
 	})
 	return nil
 }
@@ -104,7 +107,7 @@ func processMultiClusterAdoptionWorkflow() error {
 			Namespace: b.SSB.Namespace,
 			SSBName:   b.SSB.Name,
 		})
-		perClusterBlockers[b.Context] = append(perClusterBlockers[b.Context], b)
+		perClusterBlockers[b.ClusterID] = append(perClusterBlockers[b.ClusterID], b)
 	}
 
 	plan := adoptexternal.Plan{
