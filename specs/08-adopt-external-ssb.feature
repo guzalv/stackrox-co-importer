@@ -115,6 +115,16 @@ Feature: Adopt externally-managed ScanSettingBindings before creating ACS scan c
     And problems list MUST include category "gitops" for "cis-weekly"
     And the importer MUST NOT exit with a fatal error
 
+  # IMP-ADEXT-018: the confirmation is BATCHED across all blocked scans. When
+  # several ACS scan configurations are blocked by external ScanSettingBindings
+  # and --delete-existing is set without --yes, the importer MUST collect and
+  # back up every blocked scan first, then prompt EXACTLY ONCE to confirm
+  # deleting the whole set — not once per scan. --yes still skips the prompt; the
+  # default (no --delete-existing) still reports-and-skips without prompting;
+  # backups still precede every deletion (IMP-ADEXT-002); and the per-cluster
+  # settle guard (IMP-ADEXT-006..008) still runs before each create.
+  # (Tested as a run.go integration test in internal/run.)
+
   # ─── Settle-timeout guard against GitOps self-heal ────────────────────────────
 
   # IMP-ADEXT-006, IMP-ADEXT-007
