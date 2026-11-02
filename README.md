@@ -288,6 +288,21 @@ and key fields, not a round-trippable Kubernetes manifest — plus a resumable
 plan, to `--backup-dir` (default: a timestamped directory in the current working
 directory).
 
+**In a container**, the interactive prompt needs a TTY. Add `-it` so the `[y/N]`
+confirmation can be shown:
+
+```bash
+podman run --rm -it ... ghcr.io/guzalv/stackrox-co-importer:latest --delete-existing
+```
+
+Without a TTY — the default for `docker run`, and always in CI — the importer
+refuses `--delete-existing` alone. Pass `--yes` instead to delete the blocking
+binding(s) without prompting:
+
+```bash
+podman run --rm ... ghcr.io/guzalv/stackrox-co-importer:latest --delete-existing --yes
+```
+
 **Option 2 — remove it yourself** (e.g. delete it from your GitOps source and
 let the tool prune it, or `oc delete` it directly), then re-run the importer
 with no extra flags. Since a plain run already wrote the backup/plan on its
