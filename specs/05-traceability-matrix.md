@@ -7,6 +7,7 @@ Use this matrix to ensure complete implementation coverage.
 |IMP-CLI-001..034|`01-cli-and-config-contract.md`|Table-driven Go tests in `internal/config/`|CLI parsing, preflight, auth modes, multi-cluster, --overwrite-existing, --exclude, --list-ssbs, --delete-existing/--yes/--backup-dir/--settle-timeout|
 |IMP-MAP-001..021, IMP-MAP-020a|`02-co-to-acs-mapping.feature`|Godog scenarios in `features/`|Mapping, schedule, cluster auto-discovery, SSB merging, merge conflict console output|
 |IMP-MAP-017a|`02-co-to-acs-mapping.feature`|Go unit test in `internal/acs/`|ACS /v1/clusters wire format: providerMetadata nested under status|
+|IMP-MAP-018a|`02-co-to-acs-mapping.feature`|Go unit test in `internal/cofetch/`|helm Secret .data is base64 via dynamic client; decode + trim; ConfigMap .data is plain text|
 |IMP-IDEM-001..009|`03-idempotency-dry-run-retries.feature`|Godog scenarios in `features/`|Idempotency, overwrite mode (PUT), dry-run reporting|
 |IMP-ERR-001..004|`03-idempotency-dry-run-retries.feature`|Godog scenarios in `features/`|Retry classes, skip-on-error behavior, exit code outcomes|
 |IMP-ACC-001..027|`04-validation-and-acceptance.md`|e2e tests in `e2e/`|Real cluster, ACS verification, multi-cluster merge, auto-discovery, --exclude, --list-ssbs|

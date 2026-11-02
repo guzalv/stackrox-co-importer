@@ -4,6 +4,7 @@ package cofetch
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -212,16 +213,22 @@ func (r *KubeReaderFromDynamic) GetSecretData(namespace, name, key string) (stri
 	if err != nil {
 		return "", err
 	}
-	// Secrets can have data (base64-decoded by the API) or stringData
+	// IMP-MAP-018a: the dynamic (unstructured) client does NOT decode Secret
+	// .data, unlike the typed client. Values arrive base64-encoded as served by
+	// the API server, and the stored value commonly carries a trailing newline.
 	if data, ok := secret.Object["data"].(map[string]interface{}); ok {
 		if val, ok := data[key].(string); ok {
-			// The dynamic client returns base64-decoded data as string
-			return val, nil
+			decoded, decErr := base64.StdEncoding.DecodeString(val)
+			if decErr != nil {
+				return "", fmt.Errorf("decoding Secret %s/%s key %q: %w", namespace, name, key, decErr)
+			}
+			return strings.TrimSpace(string(decoded)), nil
 		}
 	}
+	// stringData is write-only and not returned on GET, but handle it as plain text if present.
 	if data, ok := secret.Object["stringData"].(map[string]interface{}); ok {
 		if val, ok := data[key].(string); ok {
-			return val, nil
+			return strings.TrimSpace(val), nil
 		}
 	}
 	return "", fmt.Errorf("key %q not found in Secret %s/%s", key, namespace, name)
