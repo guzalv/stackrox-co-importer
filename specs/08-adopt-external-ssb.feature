@@ -58,6 +58,15 @@ Feature: Adopt externally-managed ScanSettingBindings before creating ACS scan c
     When the importer starts
     Then the importer MUST fail with an error mentioning the backup directory is not empty
 
+  # IMP-ADEXT-016: a backup WRITE failure (e.g. --backup-dir is not writable —
+  # the common case when the container runs as non-root UID 65534 and no writable
+  # volume is mounted) MUST fail that scan with a remediation hint (point
+  # --backup-dir at a writable directory / mount a writable volume), not a raw OS
+  # error. This mirrors the hint already attached to the backup-dir-conflict path
+  # (IMP-ADEXT-015). (Tested as a run.go integration test in internal/run, since
+  # it spans the discovery→blocker→backup orchestration and depends on real
+  # filesystem permissions.)
+
   # ─── Default behavior: report and skip, never block or delete ────────────────
 
   # IMP-ADEXT-003

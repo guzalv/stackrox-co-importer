@@ -396,3 +396,72 @@ func TestIMP_ACC_008_BrokenBindingFailsOnlyItself(t *testing.T) {
 		t.Error("expected good-binding to still be processed despite the broken binding")
 	}
 }
+
+// TestIMP_ADEXT_016_BackupWriteFailureSurfacesHint reproduces the container
+// failure where --backup-dir is not writable (image runs as USER 65534 with no
+// writable volume mounted): CheckBackupDir passes because the directory does not
+// exist yet, but WriteBackup's MkdirAll then fails with a permission error. The
+// scan MUST fail with a remediation hint, not a raw OS error. IMP-ADEXT-016.
+func TestIMP_ADEXT_016_BackupWriteFailureSurfacesHint(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("relies on filesystem permissions; root bypasses them")
+	}
+
+	// A read-only parent dir: the (non-existent) backup dir under it passes
+	// CheckBackupDir (does not exist yet) but MkdirAll fails (parent not writable),
+	// matching the container's EACCES-at-MkdirAll case.
+	roParent := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(roParent, 0o555); err != nil {
+		t.Fatalf("mkdir read-only parent: %v", err)
+	}
+	backupDir := filepath.Join(roParent, "co-importer-backup")
+
+	// An unlabeled SSB is "external", and a scan takes the SSB's own name, so the
+	// SSB blocks its own scan. Non-dry-run, so the importer backs it up first.
+	cfg := &config.Config{
+		Namespace:  "openshift-compliance",
+		BackupDir:  backupDir,
+		ReportJSON: filepath.Join(t.TempDir(), "report.json"),
+	}
+	src := testSource("ctx-a", "cluster-a", []models.ScanSettingBinding{ssbRef("cis-weekly", "ocp4-cis")})
+	runner := newTestRunner(cfg, newFakeACSClient(), []clusterSource{src})
+
+	exitCode := runner.Run(context.Background())
+	if exitCode == ExitSuccess {
+		t.Fatalf("expected a non-success exit code when the backup cannot be written, got %d", exitCode)
+	}
+
+	rep := readReport(t, cfg.ReportJSON)
+	if rep.Counts.Failed != 1 {
+		t.Fatalf("expected failed=1, got %d", rep.Counts.Failed)
+	}
+
+	var item *report.Item
+	for i := range rep.Items {
+		if rep.Items[i].Source.BindingName == "cis-weekly" {
+			item = &rep.Items[i]
+		}
+	}
+	if item == nil {
+		t.Fatal("expected an items[] entry for cis-weekly")
+	}
+	if item.Action != "fail" {
+		t.Errorf("expected action=fail, got %q", item.Action)
+	}
+
+	foundHint := false
+	for _, p := range rep.Problems {
+		if strings.Contains(p.ResourceRef, "cis-weekly") && p.FixHint != "" {
+			foundHint = true
+			if !strings.Contains(p.FixHint, "writable") {
+				t.Errorf("backup-failure fix hint should mention a writable directory/volume, got %q", p.FixHint)
+			}
+			if p.Category != "gitops" {
+				t.Errorf("expected problem category gitops, got %q", p.Category)
+			}
+		}
+	}
+	if !foundHint {
+		t.Error("expected a problems[] entry with a fix hint for the backup write failure (IMP-ADEXT-016)")
+	}
+}

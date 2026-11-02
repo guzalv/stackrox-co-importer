@@ -14,6 +14,7 @@ Use this matrix to ensure complete implementation coverage.
 |IMP-IMG-001..006|`07-container-image.md`|Build + smoke|Dockerfile, static binary, multi-arch manifest, image size|
 |IMP-CLI-028..029 (runtime)|`06-exclude-and-list-ssbs.feature`|Godog scenarios in `features/`|--exclude filtering, --list-ssbs output|
 |IMP-ADEXT-001..015|`08-adopt-external-ssb.feature`|Godog scenarios in `features/`|Detect/back up/remove externally-managed SSBs blocking ACS scan config create or update, settle-timeout self-heal guard, multi-cluster all-clear gate, resume, orphaned ScanSetting warning. Replaces the retired IMP-ADOPT-001..008 (patch-after-create, invalidated by the always-on external-SSB conflict check)|
+|IMP-ADEXT-016|`08-adopt-external-ssb.feature`|Go integration test in `internal/run/`|Backup write failure (unwritable --backup-dir) fails the scan with a remediation hint, not a raw OS error|
 
 ## Coverage rule
 

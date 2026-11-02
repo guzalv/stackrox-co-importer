@@ -869,7 +869,18 @@ func (r *Runner) reconcileWithAdoptExternal(
 	// IMP-ADEXT-002: backup MUST be written, and complete, before any
 	// ScanSettingBinding is deleted.
 	if err := adoptexternal.WriteBackup(r.cfg.BackupDir, plan, blockers, scanSettings); err != nil {
+		// IMP-ADEXT-016: a backup write failure is most often an unwritable
+		// --backup-dir (container runs as non-root with no writable volume
+		// mounted). Surface a remediation hint instead of a raw OS error.
 		r.printer.Fail(fmt.Sprintf("failed to back up blocking resources for %q: %v", scanName, err))
+		collector.Add(problems.Problem{
+			Severity:    "error",
+			Category:    "gitops",
+			ResourceRef: scanName,
+			Description: err.Error(),
+			FixHint:     "Point --backup-dir at a writable directory. In a container, mount a writable volume (e.g. -v $PWD/co-backups:/backups:U) so the backup can be written and persists after the run.",
+			Skipped:     true,
+		})
 		item.Action, item.Reason, item.Error = "fail", err.Error(), err.Error()
 		return item
 	}
