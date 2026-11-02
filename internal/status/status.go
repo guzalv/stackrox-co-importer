@@ -7,36 +7,50 @@ import (
 	"os"
 )
 
-// Printer outputs progress messages to stderr.
-type Printer struct{}
+// Printer outputs progress messages to a writer (stderr by default).
+type Printer struct {
+	w io.Writer
+}
 
-// New creates a new status printer.
+// New creates a new status printer that writes to stderr.
 func New() *Printer {
-	return &Printer{}
+	return &Printer{w: os.Stderr}
+}
+
+// NewWithWriter creates a status printer that writes to w. Used by tests to
+// capture console output.
+func NewWithWriter(w io.Writer) *Printer {
+	return &Printer{w: w}
+}
+
+// Writer returns the printer's output writer, so callers can print additional
+// lines (e.g. the Problems section) to the same destination.
+func (p *Printer) Writer() io.Writer {
+	return p.w
 }
 
 // Stage prints a stage heading with optional detail.
 func (p *Printer) Stage(title, detail string) {
 	if detail != "" {
-		fmt.Fprintf(os.Stderr, "==> %s: %s\n", title, detail)
+		fmt.Fprintf(p.w, "==> %s: %s\n", title, detail)
 	} else {
-		fmt.Fprintf(os.Stderr, "==> %s\n", title)
+		fmt.Fprintf(p.w, "==> %s\n", title)
 	}
 }
 
 // OK prints a success message.
 func (p *Printer) OK(msg string) {
-	fmt.Fprintf(os.Stderr, "  [OK] %s\n", msg)
+	fmt.Fprintf(p.w, "  [OK] %s\n", msg)
 }
 
 // Warn prints a warning message.
 func (p *Printer) Warn(msg string) {
-	fmt.Fprintf(os.Stderr, "  [WARN] %s\n", msg)
+	fmt.Fprintf(p.w, "  [WARN] %s\n", msg)
 }
 
 // Fail prints a failure message.
 func (p *Printer) Fail(msg string) {
-	fmt.Fprintf(os.Stderr, "  [FAIL] %s\n", msg)
+	fmt.Fprintf(p.w, "  [FAIL] %s\n", msg)
 }
 
 // PrintWarnings prints each warning (e.g. config.Config.Warnings, such as

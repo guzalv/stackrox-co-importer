@@ -465,3 +465,55 @@ func TestIMP_ADEXT_016_BackupWriteFailureSurfacesHint(t *testing.T) {
 		t.Error("expected a problems[] entry with a fix hint for the backup write failure (IMP-ADEXT-016)")
 	}
 }
+
+// TestIMP_CLI_020a_ProblemsPrintedToConsole verifies that collected problems and
+// their fix hints are printed to the console (not only to the JSON report), so a
+// user who did not pass --report-json still sees remediation. Before the fix the
+// console only said "see problems for remediation" with no actual problems
+// printed. IMP-CLI-020a.
+func TestIMP_CLI_020a_ProblemsPrintedToConsole(t *testing.T) {
+	good := ssbRef("good-binding", "ocp4-cis")
+	good.ScanSettingName = "default"
+	broken := ssbRef("broken-binding", "ocp4-cis")
+	broken.ScanSettingName = "does-not-exist"
+
+	cfg := &config.Config{
+		DryRun:     true,
+		ReportJSON: filepath.Join(t.TempDir(), "report.json"),
+	}
+	src := clusterSource{
+		kubeconfigFile: "/fake/kubeconfig-ctx-a",
+		contextName:    "ctx-a",
+		clusterID:      "cluster-a",
+		coClient: &fakeCOClient{
+			ssbs:                []models.ScanSettingBinding{good, broken},
+			scanSettings:        map[string]*models.ScanSetting{},
+			missingScanSettings: map[string]bool{"does-not-exist": true},
+		},
+	}
+
+	var console bytes.Buffer
+	runner := newTestRunner(cfg, newFakeACSClient(), []clusterSource{src})
+	runner.printer = status.NewWithWriter(&console)
+
+	runner.Run(context.Background())
+
+	rep := readReport(t, cfg.ReportJSON)
+	if len(rep.Problems) == 0 {
+		t.Fatal("precondition: expected at least one problem in the report")
+	}
+
+	out := console.String()
+	if !strings.Contains(out, "Problems") {
+		t.Errorf("expected a Problems section in console output; got:\n%s", out)
+	}
+	// Every problem's resourceRef and fix hint must reach the console.
+	for _, p := range rep.Problems {
+		if p.ResourceRef != "" && !strings.Contains(out, p.ResourceRef) {
+			t.Errorf("console must mention problem resourceRef %q; got:\n%s", p.ResourceRef, out)
+		}
+		if p.FixHint != "" && !strings.Contains(out, p.FixHint) {
+			t.Errorf("console must include fix hint %q; got:\n%s", p.FixHint, out)
+		}
+	}
+}

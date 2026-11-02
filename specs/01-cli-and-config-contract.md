@@ -148,6 +148,12 @@ external SSB, rather than surfacing ACS's raw error. Full runtime behavior is sp
   - bindings discovered
   - creates/skips/failures
   - dry-run indicator
+- **IMP-CLI-020a**: whenever any `problems[]` entries were collected, print a
+  human-readable "Problems" section to the console (the same destination as the
+  summary), independently of `--report-json`. Each entry MUST show its
+  `severity`, `resourceRef`, `category`, `description`, and — when present — its
+  `fixHint`. This makes the run-time "see problems for remediation" messages
+  actionable for users who did not request a JSON report.
 
 ### JSON report shape
 
