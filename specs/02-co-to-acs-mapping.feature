@@ -86,6 +86,14 @@ Feature: Map Compliance Operator scheduled scan resources to ACS scan configurat
     When the importer resolves the ACS cluster ID for "ctx-b"
     Then the resolved ACS cluster ID MUST be "acs-uuid-b"
 
+  # IMP-MAP-017a: wire format of the ACS /v1/clusters response. In the real
+  # cluster object, providerMetadata is nested under "status", i.e.
+  # status.providerMetadata.cluster.id — NOT at the top level. The ACS client
+  # MUST read the provider cluster ID from status.providerMetadata.cluster.id,
+  # otherwise ClusterVersion matching (IMP-MAP-017) silently never matches.
+  # (Tested at the Go unit level in internal/acs/http_client_test.go, since the
+  # Godog ACS lister is a fake that bypasses JSON parsing.)
+
   # IMP-MAP-018
   @mapping @clusters
   Scenario: Fallback to helm-effective-cluster-name for cluster matching

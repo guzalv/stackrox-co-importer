@@ -186,6 +186,8 @@ func TestListScanConfigs_Empty(t *testing.T) {
 
 // ── ListClusters: JSON parsing ────────────────────────────────────────────────
 
+// IMP-MAP-017a: providerMetadata is nested under "status" in the real ACS
+// /v1/clusters response, not at the top level of the cluster object.
 func TestListClusters_ParsesProviderMetadata(t *testing.T) {
 	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
@@ -193,8 +195,10 @@ func TestListClusters_ParsesProviderMetadata(t *testing.T) {
 				{
 					"id":   "acs-id-1",
 					"name": "my-cluster",
-					"providerMetadata": map[string]interface{}{
-						"cluster": map[string]interface{}{"id": "ocp-provider-id"},
+					"status": map[string]interface{}{
+						"providerMetadata": map[string]interface{}{
+							"cluster": map[string]interface{}{"id": "ocp-provider-id"},
+						},
 					},
 				},
 			},
