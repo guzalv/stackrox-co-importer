@@ -41,7 +41,7 @@ type Item struct {
 
 // Problem is a structured issue entry.
 type Problem struct {
-	Severity    string `json:"severity"`
+	Severity    string `json:"severity"` // "error", "warning", or "info"
 	Category    string `json:"category"`
 	ResourceRef string `json:"resourceRef"`
 	Description string `json:"description"`

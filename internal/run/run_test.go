@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/guzalv/stackrox-co-importer/internal/acs"
+	"github.com/guzalv/stackrox-co-importer/internal/adoptexternal"
 	"github.com/guzalv/stackrox-co-importer/internal/config"
 	"github.com/guzalv/stackrox-co-importer/internal/models"
 	"github.com/guzalv/stackrox-co-importer/internal/problems"
@@ -515,6 +516,36 @@ func TestIMP_CLI_020a_ProblemsPrintedToConsole(t *testing.T) {
 		if p.FixHint != "" && !strings.Contains(out, p.FixHint) {
 			t.Errorf("console must include fix hint %q; got:\n%s", p.FixHint, out)
 		}
+	}
+}
+
+// TestIMP_ADEXT_010_OrphanRendersAsInfo verifies that the orphan ScanSetting
+// problem is reported at severity "info" (not "warning") and that the console
+// Problems section renders it as "[info] ...". The orphan is an informational,
+// exit-neutral note, not a failure. IMP-ADEXT-010.
+func TestIMP_ADEXT_010_OrphanRendersAsInfo(t *testing.T) {
+	note := adoptexternal.OrphanNote("shared-weekly-setting", "admin", "openshift-compliance")
+	if note.Severity != "info" {
+		t.Fatalf("OrphanNote severity = %q, want \"info\"", note.Severity)
+	}
+	if note.Category != "orphan" {
+		t.Fatalf("OrphanNote category = %q, want \"orphan\"", note.Category)
+	}
+
+	var console bytes.Buffer
+	runner := NewRunner(&config.Config{}, newFakeACSClient())
+	runner.printer = status.NewWithWriter(&console)
+	runner.printProblems([]problems.Problem{note})
+
+	out := console.String()
+	if !strings.Contains(out, "[info]") {
+		t.Errorf("console must render the orphan note as [info]; got:\n%s", out)
+	}
+	if strings.Contains(out, "[warning]") {
+		t.Errorf("console must NOT render the orphan note as [warning]; got:\n%s", out)
+	}
+	if !strings.Contains(out, note.ResourceRef) {
+		t.Errorf("console must mention the ScanSetting %q; got:\n%s", note.ResourceRef, out)
 	}
 }
 

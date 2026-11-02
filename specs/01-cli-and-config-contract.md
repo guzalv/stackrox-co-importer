@@ -169,12 +169,13 @@ external SSB, rather than surfacing ACS's raw error. Full runtime behavior is sp
     - `acsScanConfigId` (if known)
     - `error` (if failed)
   - `problems[]`:
-    - `severity` (`error|warning`)
+    - `severity` (`error|warning|info`)
     - `category` (`input|mapping|conflict|auth|api|retry|validation|gitops|orphan`)
       - `gitops`: a blocking external SSB was found, reappeared during the settle window, or
         otherwise prevented a create/update (IMP-ADEXT-*)
       - `orphan`: a ScanSetting previously referenced by a deleted external SSB was left behind
-        (IMP-ADEXT-010)
+        (IMP-ADEXT-010). Reported at severity `info`: it is an informational note, not a failure,
+        and is exit-neutral (it never drives exit code 2).
     - `resourceRef` (`namespace/name` or synthetic ref for non-resource errors)
     - `description` (what happened)
     - `fixHint` (how to fix)
