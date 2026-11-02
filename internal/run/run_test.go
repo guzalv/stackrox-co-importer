@@ -517,3 +517,63 @@ func TestIMP_CLI_020a_ProblemsPrintedToConsole(t *testing.T) {
 		}
 	}
 }
+
+// fakeAdoptK8s is an in-memory adoptK8sClient: it records deletions and reports
+// every ScanSettingBinding as gone (so the settle guard never trips).
+type fakeAdoptK8s struct {
+	deleted []string
+}
+
+func (f *fakeAdoptK8s) DeleteScanSettingBinding(ctxName, namespace, name string) error {
+	f.deleted = append(f.deleted, ctxName+"/"+namespace+"/"+name)
+	return nil
+}
+
+func (f *fakeAdoptK8s) ScanSettingBindingExists(_, _, _ string) (bool, error) {
+	return false, nil
+}
+
+// TestIMP_ADEXT_018_BatchedDeleteConfirmation verifies that when several scan
+// configurations are blocked by external ScanSettingBindings and
+// --delete-existing is set without --yes, the operator is prompted EXACTLY ONCE
+// for the whole set — not once per scan — and that after confirming, every
+// blocking SSB is deleted and every scan is created. IMP-ADEXT-018.
+func TestIMP_ADEXT_018_BatchedDeleteConfirmation(t *testing.T) {
+	// Two external (unlabeled) SSBs, each blocking its own scan configuration.
+	ssbA := ssbRef("scan-a", "ocp4-cis")
+	ssbB := ssbRef("scan-b", "ocp4-moderate")
+
+	cfg := &config.Config{
+		DeleteExisting: true,
+		Namespace:      "openshift-compliance",
+		BackupDir:      filepath.Join(t.TempDir(), "backups"),
+		ReportJSON:     filepath.Join(t.TempDir(), "report.json"),
+		SettleTimeout:  0,
+	}
+
+	src := testSource("ctx-a", "cluster-a", []models.ScanSettingBinding{ssbA, ssbB})
+	runner := newTestRunner(cfg, newFakeACSClient(), []clusterSource{src})
+
+	fakeK8s := &fakeAdoptK8s{}
+	runner.newAdoptK8s = func(_ []clusterSource) adoptK8sClient { return fakeK8s }
+
+	promptCount := 0
+	runner.confirmer = func(_ string) (bool, error) {
+		promptCount++
+		return true, nil
+	}
+
+	runner.Run(context.Background())
+
+	if promptCount != 1 {
+		t.Errorf("expected exactly ONE batched confirmation prompt for 2 blocked scans, got %d", promptCount)
+	}
+
+	rep := readReport(t, cfg.ReportJSON)
+	if rep.Counts.Create != 2 {
+		t.Errorf("expected both blocked scans created after confirmation, got create=%d", rep.Counts.Create)
+	}
+	if len(fakeK8s.deleted) != 2 {
+		t.Errorf("expected both blocking SSBs deleted, got %d: %v", len(fakeK8s.deleted), fakeK8s.deleted)
+	}
+}

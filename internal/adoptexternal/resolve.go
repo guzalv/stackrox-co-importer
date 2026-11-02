@@ -210,6 +210,41 @@ func confirmDeletion(blockers []merge.ClusterSSB, scanName string, yes bool, con
 	return confirmed, nil
 }
 
+// ConfirmBatchDeletion asks the operator ONCE to confirm deleting every
+// blocking ScanSettingBinding across all pending scan configurations, instead
+// of prompting per scan (IMP-ADEXT-018). allBlockers is the set across every
+// pending scan; scanNames lists the ACS scan configurations they block, for
+// the prompt text. yes (from --yes) skips the prompt (IMP-ADEXT-004). The
+// caller only calls this when --delete-existing is set and at least one scan is
+// pending.
+func ConfirmBatchDeletion(allBlockers []merge.ClusterSSB, scanNames []string, yes bool, confirmer Confirmer) (bool, error) {
+	if yes {
+		return true, nil
+	}
+	if confirmer == nil {
+		return false, fmt.Errorf("--delete-existing requires a confirmation prompt but none was provided")
+	}
+	confirmed, err := confirmer(batchDeletePrompt(allBlockers, scanNames))
+	if err != nil {
+		return false, fmt.Errorf("confirming deletion of blocking ScanSettingBinding(s): %w", err)
+	}
+	return confirmed, nil
+}
+
+// batchDeletePrompt builds the single confirmation prompt that lists every
+// blocking ScanSettingBinding across all pending scans and the scan
+// configuration(s) they block. IMP-ADEXT-018
+func batchDeletePrompt(allBlockers []merge.ClusterSSB, scanNames []string) string {
+	quoted := make([]string, len(scanNames))
+	for i, n := range scanNames {
+		quoted[i] = fmt.Sprintf("%q", n)
+	}
+	return fmt.Sprintf(
+		"Delete %d external ScanSettingBinding(s) %s blocking %d ACS scan configuration(s) (%s)? [y/N]",
+		len(allBlockers), blockerRefs(allBlockers), len(scanNames), strings.Join(quoted, ", "),
+	)
+}
+
 // deleteBlockers deletes every blocker via deleter, shared by ResolveBlocker
 // and ResolveMergedBlockers. IMP-ADEXT-004
 func deleteBlockers(blockers []merge.ClusterSSB, deleter Deleter) error {

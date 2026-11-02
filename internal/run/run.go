@@ -68,6 +68,21 @@ type Runner struct {
 	// kubeconfig, so the full discovery->merge->reconcile->report pipeline
 	// can be exercised with fakes (see run_test.go).
 	buildSources func(ctx context.Context, collector *problems.Collector) ([]clusterSource, error)
+	// confirmer prompts the operator for the --delete-existing confirmation.
+	// Defaults to the interactive stdin-backed prompt; tests override it to
+	// inject a fake (e.g. to count how many times the operator is prompted).
+	confirmer adoptexternal.Confirmer
+	// newAdoptK8s builds the Deleter+Exister used by the adopt-external
+	// workflow from the cluster sources. Defaults to the real dynamic-client
+	// adapter; tests override it to inject a fake without a real cluster.
+	newAdoptK8s func(sources []clusterSource) adoptK8sClient
+}
+
+// adoptK8sClient is the K8s surface the adopt-external workflow needs: delete a
+// blocking ScanSettingBinding and check whether one exists (settle guard).
+type adoptK8sClient interface {
+	adoptexternal.Deleter
+	adoptexternal.Exister
 }
 
 // NewRunner creates a new pipeline runner.
@@ -78,6 +93,10 @@ func NewRunner(cfg *config.Config, acsClient acs.Client) *Runner {
 		printer:   status.New(),
 	}
 	r.buildSources = r.buildClusterSources
+	r.confirmer = interactiveConfirmer()
+	r.newAdoptK8s = func(sources []clusterSource) adoptK8sClient {
+		return newAdoptK8sAdapter(sources)
+	}
 	return r
 }
 
@@ -144,11 +163,6 @@ func (r *Runner) Run(ctx context.Context) int {
 	// Step 3: For each context, list SSBs, get ScanSettings, build merge inputs
 	r.printer.Stage("Fetching CO resources and building payloads", "")
 	var allClusterSSBs []merge.ClusterSSB
-	type ssbDetail struct {
-		namespace       string
-		bindingName     string
-		scanSettingName string
-	}
 	ssbDetails := make(map[string]ssbDetail)
 	// scanSettingsByBinding carries the ScanSetting object referenced by each
 	// SSB (keyed by "context/ssbName"), so a blocking external SSB's
@@ -306,8 +320,7 @@ func (r *Runner) Run(ctx context.Context) int {
 	// operations; backupDirChecked ensures IMP-ADEXT-015's "non-empty
 	// backup-dir without plan.json" check runs once, lazily, only if a
 	// blocker is actually found (never for a run with nothing to back up).
-	adoptK8s := newAdoptK8sAdapter(sources)
-	confirmer := interactiveConfirmer()
+	adoptK8s := r.newAdoptK8s(sources)
 	backupDirChecked := false
 	ensureBackupDir := func() error {
 		if backupDirChecked || r.cfg.DryRun {
@@ -317,22 +330,39 @@ func (r *Runner) Run(ctx context.Context) int {
 		return adoptexternal.CheckBackupDir(r.cfg.BackupDir)
 	}
 
+	countItem := func(item report.Item) {
+		switch item.Action {
+		case "create":
+			createCount++
+		case "update":
+			updateCount++
+		case "skip":
+			skipCount++
+		case "fail":
+			failCount++
+		}
+		items = append(items, item)
+	}
+
+	// Pass 1: resolve every scan that needs no batched confirmation (direct
+	// create/update, already-exists skip, dry-run report, or a pre-adoption
+	// failure), and collect the scans blocked by external SSBs as pending
+	// adoptions — backing each one up now, before any deletion (IMP-ADEXT-002).
+	var pending []pendingAdoption
 	for _, mc := range mergedConfigs {
 		seenScanNames[mc.ScanName] = true
 		schedule, schedErr := mapping.ConvertCronToACSSchedule(mc.Schedule)
+		detail := ssbDetails[mc.ScanName]
 		if schedErr != nil {
-			ref := mc.ScanName
 			collector.Add(problems.Problem{
 				Severity:    "error",
 				Category:    "mapping",
-				ResourceRef: ref,
+				ResourceRef: mc.ScanName,
 				Description: fmt.Sprintf("schedule conversion failed for %q: %v", mc.ScanName, schedErr),
 				FixHint:     "Update the ScanSetting to use a supported 5-field cron expression",
 				Skipped:     true,
 			})
-			failCount++
-			detail := ssbDetails[mc.ScanName]
-			items = append(items, report.Item{
+			countItem(report.Item{
 				Source: report.ItemSource{
 					Namespace:       detail.namespace,
 					BindingName:     detail.bindingName,
@@ -356,26 +386,25 @@ func (r *Runner) Run(ctx context.Context) int {
 			Clusters: mc.ClusterIDs,
 		}
 
-		detail := ssbDetails[mc.ScanName]
-		item := r.reconcileWithAdoptExternal(ctx, reconciler, collector, payload, mc.ScanName, mc.Schedule,
-			allClusterSSBs, scanSettingsByBinding, envStamp, adoptK8s, confirmer, ensureBackupDir)
+		item, pend := r.prepareAdoption(ctx, reconciler, collector, payload, mc.ScanName, mc.Schedule,
+			allClusterSSBs, scanSettingsByBinding, envStamp, ensureBackupDir)
+		if pend != nil {
+			pend.detail = detail
+			pending = append(pending, *pend)
+			continue
+		}
 		item.Source = report.ItemSource{
 			Namespace:       detail.namespace,
 			BindingName:     detail.bindingName,
 			ScanSettingName: detail.scanSettingName,
 		}
+		countItem(item)
+	}
 
-		switch item.Action {
-		case "create":
-			createCount++
-		case "update":
-			updateCount++
-		case "skip":
-			skipCount++
-		case "fail":
-			failCount++
-		}
-		items = append(items, item)
+	// Pass 2: IMP-ADEXT-018 — confirm the whole set of blocked scans with a
+	// single prompt, then delete + settle + create each.
+	for _, item := range r.executeAdoptions(ctx, reconciler, collector, pending, adoptK8s) {
+		countItem(item)
 	}
 
 	// IMP-ADEXT-011: process resumed scans (from a persisted plan) that a
@@ -812,12 +841,45 @@ func apiFailureFixHint(err error) string {
 	return "Check ACS connectivity and the scan configuration payload; see the error above, then re-run the importer."
 }
 
-// reconcileWithAdoptExternal reconciles one merged scan configuration,
-// resolving any blocking external ScanSettingBinding first (IMP-ADEXT-*)
-// when reconcile would otherwise attempt a create or update. It returns a
-// report.Item with Action/Reason/Attempts/ACSScanConfigID/Error set; the
-// caller fills in Source.
-func (r *Runner) reconcileWithAdoptExternal(
+// ssbDetail carries the namespace/binding/scan-setting names used to fill in a
+// report.Item's Source for a merged scan configuration.
+type ssbDetail struct {
+	namespace       string
+	bindingName     string
+	scanSettingName string
+}
+
+func (d ssbDetail) itemSource() report.ItemSource {
+	return report.ItemSource{
+		Namespace:       d.namespace,
+		BindingName:     d.bindingName,
+		ScanSettingName: d.scanSettingName,
+	}
+}
+
+// pendingAdoption is a scan configuration that is blocked by external
+// ScanSettingBinding(s) and has already been backed up, awaiting the single
+// batched delete confirmation (IMP-ADEXT-018) before its blockers are deleted
+// and the scan configuration is created.
+type pendingAdoption struct {
+	scanName     string
+	payload      models.ACSPayload
+	perCluster   map[string][]merge.ClusterSSB
+	blockers     []merge.ClusterSSB
+	scanSettings []adoptexternal.ScanSettingSource
+	detail       ssbDetail
+}
+
+// prepareAdoption is pass 1 of the adopt-external workflow for one merged scan
+// configuration. It resolves scans that need no batched confirmation and
+// returns their report.Item (with the caller filling in Source): an
+// already-exists skip, a direct create/update when nothing blocks, a dry-run
+// report (IMP-ADEXT-014), or a pre-adoption failure (backup-dir/backup error).
+// When the scan is blocked by external ScanSettingBinding(s) in a real run, it
+// backs them up now — before any deletion (IMP-ADEXT-002) — and returns a
+// *pendingAdoption (and a zero Item) for the batched pass 2 to confirm, delete,
+// and create.
+func (r *Runner) prepareAdoption(
 	ctx context.Context,
 	reconciler *reconcile.Reconciler,
 	collector *problems.Collector,
@@ -826,10 +888,8 @@ func (r *Runner) reconcileWithAdoptExternal(
 	allClusterSSBs []merge.ClusterSSB,
 	scanSettingsByBinding map[string]*models.ScanSetting,
 	envStamp adoptexternal.EnvStamp,
-	adoptK8s *adoptK8sAdapter,
-	confirmer adoptexternal.Confirmer,
 	ensureBackupDir func() error,
-) report.Item {
+) (report.Item, *pendingAdoption) {
 	var item report.Item
 
 	// Peek (dry-run, regardless of the overall run mode) to learn the
@@ -844,7 +904,7 @@ func (r *Runner) reconcileWithAdoptExternal(
 
 	if peek.Action == "skip" {
 		r.logAndRecordResult(collector, scanName, peek, &item)
-		return item
+		return item, nil
 	}
 
 	// A write (create or update) would be attempted: find any blocking
@@ -853,7 +913,7 @@ func (r *Runner) reconcileWithAdoptExternal(
 	if len(blockers) == 0 {
 		result := reconciler.Reconcile(ctx, payload)
 		r.logAndRecordResult(collector, scanName, result, &item)
-		return item
+		return item, nil
 	}
 
 	if r.cfg.DryRun {
@@ -862,7 +922,7 @@ func (r *Runner) reconcileWithAdoptExternal(
 			r.printer.OK(msg)
 		}
 		r.logAndRecordResult(collector, scanName, peek, &item)
-		return item
+		return item, nil
 	}
 
 	perCluster := make(map[string][]merge.ClusterSSB)
@@ -881,7 +941,7 @@ func (r *Runner) reconcileWithAdoptExternal(
 			Skipped:     true,
 		})
 		item.Action, item.Reason, item.Error = "fail", err.Error(), err.Error()
-		return item
+		return item, nil
 	}
 
 	plan := adoptexternal.Plan{
@@ -898,7 +958,8 @@ func (r *Runner) reconcileWithAdoptExternal(
 		}
 	}
 	// IMP-ADEXT-002: backup MUST be written, and complete, before any
-	// ScanSettingBinding is deleted.
+	// ScanSettingBinding is deleted. All backups happen here in pass 1, before
+	// pass 2 deletes anything.
 	if err := adoptexternal.WriteBackup(r.cfg.BackupDir, plan, blockers, scanSettings); err != nil {
 		// IMP-ADEXT-016: a backup write failure is most often an unwritable
 		// --backup-dir (container runs as non-root with no writable volume
@@ -913,42 +974,107 @@ func (r *Runner) reconcileWithAdoptExternal(
 			Skipped:     true,
 		})
 		item.Action, item.Reason, item.Error = "fail", err.Error(), err.Error()
-		return item
+		return item, nil
 	}
 	r.printer.OK(fmt.Sprintf("backed up %d blocking resource(s) for %q to %s", len(blockers), scanName, r.cfg.BackupDir))
 
-	// IMP-ADEXT-003..008: report-and-skip, or delete-with-confirmation plus
-	// the settle-timeout self-heal guard, independently per cluster.
-	proceed, resolveErr := adoptexternal.ResolveMergedBlockers(
-		collector, scanName, perCluster, r.cfg.DeleteExisting, r.cfg.ConfirmYes,
-		adoptK8s, confirmer, adoptK8s, r.cfg.SettleTimeout, nil,
-	)
-	if resolveErr != nil {
-		r.printer.Fail(fmt.Sprintf("failed to resolve blocking resources for %q: %v", scanName, resolveErr))
-		item.Action, item.Reason, item.Error = "fail", resolveErr.Error(), resolveErr.Error()
-		return item
+	return report.Item{}, &pendingAdoption{
+		scanName:     scanName,
+		payload:      payload,
+		perCluster:   perCluster,
+		blockers:     blockers,
+		scanSettings: scanSettings,
 	}
-	if !proceed {
-		reason := "blocked by external ScanSettingBinding(s); see problems for remediation"
-		r.printer.Warn(fmt.Sprintf("skipped %q: %s", scanName, reason))
-		item.Action, item.Reason = "skip", reason
-		return item
+}
+
+// executeAdoptions is pass 2 of the adopt-external workflow: it confirms the
+// whole set of already-backed-up blocked scans with a SINGLE prompt
+// (IMP-ADEXT-018) instead of one per scan, then — per scan — deletes the
+// blocking ScanSettingBinding(s), runs the per-cluster settle guard against
+// GitOps self-heal (IMP-ADEXT-006..008), and creates the scan configuration.
+// Without --delete-existing (or when the operator declines) every pending scan
+// is reported-and-skipped (IMP-ADEXT-003, IMP-ADEXT-005); the backup/plan was
+// already written, enabling the manual-delete-then-rerun flow (IMP-ADEXT-011).
+func (r *Runner) executeAdoptions(
+	ctx context.Context,
+	reconciler *reconcile.Reconciler,
+	collector *problems.Collector,
+	pending []pendingAdoption,
+	adoptK8s adoptK8sClient,
+) []report.Item {
+	if len(pending) == 0 {
+		return nil
 	}
 
-	// IMP-ADEXT-009: the actual create/update always goes through the
-	// normal reconcile path (idempotent pre-list), never a second/duplicate
-	// write mechanism.
-	result := reconciler.Reconcile(ctx, payload)
-	r.logAndRecordResult(collector, scanName, result, &item)
-	if item.Action == "create" {
-		// IMP-ADEXT-010: the ScanSetting(s) the deleted external SSB(s)
-		// referenced are intentionally left in place; flag them as
-		// possibly orphaned rather than deleting them ourselves.
-		for _, ss := range scanSettings {
-			collector.Add(adoptexternal.OrphanWarning(ss.ScanSetting.Name, ss.Context, ss.ScanSetting.Namespace))
+	// IMP-ADEXT-018: confirm the whole set once. The prompt lists every
+	// blocking ScanSettingBinding across all pending scans. --yes skips it;
+	// without --delete-existing we never prompt (default report-and-skip).
+	confirmed := true
+	if r.cfg.DeleteExisting {
+		var union []merge.ClusterSSB
+		scanNames := make([]string, 0, len(pending))
+		for i := range pending {
+			union = append(union, pending[i].blockers...)
+			scanNames = append(scanNames, pending[i].scanName)
+		}
+		var err error
+		confirmed, err = adoptexternal.ConfirmBatchDeletion(union, scanNames, r.cfg.ConfirmYes, r.confirmer)
+		if err != nil {
+			items := make([]report.Item, 0, len(pending))
+			for i := range pending {
+				r.printer.Fail(fmt.Sprintf("failed to confirm deletion of blocking resources for %q: %v", pending[i].scanName, err))
+				items = append(items, report.Item{Source: pending[i].detail.itemSource(), Action: "fail", Reason: err.Error(), Error: err.Error()})
+			}
+			return items
 		}
 	}
-	return item
+
+	items := make([]report.Item, 0, len(pending))
+	for i := range pending {
+		p := &pending[i]
+		var item report.Item
+		item.Source = p.detail.itemSource()
+
+		// effectiveDelete is false for the default (no --delete-existing) and
+		// declined cases: ResolveMergedBlockers then records the report-and-skip
+		// "gitops" problem and deletes nothing. When true, yes=true suppresses
+		// the per-scan prompt (already confirmed in batch above) and the delete
+		// + per-cluster settle guard run.
+		effectiveDelete := r.cfg.DeleteExisting && confirmed
+		proceed, resolveErr := adoptexternal.ResolveMergedBlockers(
+			collector, p.scanName, p.perCluster, effectiveDelete, true,
+			adoptK8s, nil, adoptK8s, r.cfg.SettleTimeout, nil,
+		)
+		if resolveErr != nil {
+			r.printer.Fail(fmt.Sprintf("failed to resolve blocking resources for %q: %v", p.scanName, resolveErr))
+			item.Action, item.Reason, item.Error = "fail", resolveErr.Error(), resolveErr.Error()
+			items = append(items, item)
+			continue
+		}
+		if !proceed {
+			reason := "blocked by external ScanSettingBinding(s); see problems for remediation"
+			r.printer.Warn(fmt.Sprintf("skipped %q: %s", p.scanName, reason))
+			item.Action, item.Reason = "skip", reason
+			items = append(items, item)
+			continue
+		}
+
+		// IMP-ADEXT-009: the actual create/update always goes through the
+		// normal reconcile path (idempotent pre-list), never a second/duplicate
+		// write mechanism.
+		result := reconciler.Reconcile(ctx, p.payload)
+		r.logAndRecordResult(collector, p.scanName, result, &item)
+		if item.Action == "create" {
+			// IMP-ADEXT-010: the ScanSetting(s) the deleted external SSB(s)
+			// referenced are intentionally left in place; flag them as
+			// possibly orphaned rather than deleting them ourselves.
+			for _, ss := range p.scanSettings {
+				collector.Add(adoptexternal.OrphanWarning(ss.ScanSetting.Name, ss.Context, ss.ScanSetting.Namespace))
+			}
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 // acsClusterListerAdapter adapts acs.Client to discover.ACSClusterLister.
